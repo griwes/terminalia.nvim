@@ -47,15 +47,34 @@ function M.ensure(terminal_manager)
         notify_terminal('Revealed', terminal)
     end
 
-    local function list_terminals_command()
-        local lines = terminal_manager.api.list_lines()
+    local function list_terminals_command(command_opts)
+        local args = split_args(command_opts.args)
+        local lines = terminal_manager.api.list_lines({
+            namespace = args[1],
+            cwd_prefix = args[2],
+        })
 
         if #lines == 0 then
+            if #args > 0 then
+                vim.notify('No terminals matched the requested filters')
+                return
+            end
+
             vim.notify('No terminals registered')
             return
         end
 
         vim.notify(table.concat(lines, '\n'))
+    end
+
+    local function history_command(command_opts)
+        local args = split_args(command_opts.args)
+
+        if #args == 0 then
+            error('TerminalManagerHistory requires a terminal id')
+        end
+
+        terminal_manager.api.open_history(args[1])
     end
 
     vim.api.nvim_create_user_command('TerminalManagerNew', new_terminal_command, {
@@ -69,8 +88,13 @@ function M.ensure(terminal_manager)
     })
 
     vim.api.nvim_create_user_command('TerminalManagerList', list_terminals_command, {
-        nargs = 0,
-        desc = 'List registered terminals',
+        nargs = '*',
+        desc = 'List registered terminals: [namespace] [cwd_prefix]',
+    })
+
+    vim.api.nvim_create_user_command('TerminalManagerHistory', history_command, {
+        nargs = 1,
+        desc = 'Open captured history for a terminal: <id>',
     })
 
     registered = true

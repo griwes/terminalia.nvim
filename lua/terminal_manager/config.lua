@@ -9,6 +9,9 @@
 ---@field default_namespace string
 ---@field default_view terminal_manager.ViewKind
 ---@field persist_terminals boolean
+---@field persist_history boolean
+---@field state_file string
+---@field history_dir string
 ---@field shell string|string[]
 ---@field split_direction string
 ---@field split_size integer
@@ -22,6 +25,9 @@ local defaults = {
     default_namespace = 'default',
     default_view = 'split',
     persist_terminals = true,
+    persist_history = true,
+    state_file = vim.fs.joinpath(vim.fn.stdpath('state'), 'terminal-manager.nvim', 'terminals.json'),
+    history_dir = vim.fs.joinpath(vim.fn.stdpath('state'), 'terminal-manager.nvim', 'history'),
     shell = vim.o.shell,
     split_direction = 'botright',
     split_size = 12,
