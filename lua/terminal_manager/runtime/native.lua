@@ -152,7 +152,7 @@ function M.ensure_started(terminal)
     local job_id
 
     vim.api.nvim_buf_call(bufnr, function()
-            job_id = vim.fn.termopen(resolve_command(terminal), {
+        job_id = vim.fn.termopen(resolve_command(terminal), {
             cwd = terminal.cwd,
             env = terminal.env,
             on_stdout = function(_, data)

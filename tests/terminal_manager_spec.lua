@@ -250,6 +250,43 @@ describe('terminal_manager', function()
         assert.is_truthy(commands.TerminalManagerHistory)
     end)
 
+    it('completes terminal ids for open and history commands', function()
+        local plugin = require('terminal_manager')
+        local terminal = plugin.api.create({
+            name = 'build',
+            namespace = 'workspace',
+        })
+        local commands = vim.api.nvim_get_commands({})
+
+        assert.is_function(commands.TerminalManagerOpen.complete)
+        assert.is_function(commands.TerminalManagerHistory.complete)
+        assert.are.same({ terminal.id }, commands.TerminalManagerOpen.complete('', 'TerminalManagerOpen ', 0))
+        assert.are.same({ terminal.id }, commands.TerminalManagerHistory.complete('', 'TerminalManagerHistory ', 0))
+    end)
+
+    it('completes namespaces, cwd prefixes, and view kinds for terminal commands', function()
+        local plugin = require('terminal_manager')
+        local terminal = plugin.api.create({
+            name = 'build',
+            namespace = 'workspace',
+            cwd = '/tmp/workspace',
+        })
+        local commands = vim.api.nvim_get_commands({})
+
+        assert.are.equal(terminal.id, plugin.api.list()[1].id)
+        assert.are.same({ 'workspace' }, commands.TerminalManagerNew.complete('w', 'TerminalManagerNew build w', 0))
+        assert.are.same(
+            { 'split' },
+            commands.TerminalManagerNew.complete('s', 'TerminalManagerNew build workspace s', 0)
+        )
+        assert.are.same({ 'float' }, commands.TerminalManagerOpen.complete('f', 'TerminalManagerOpen terminal:1 f', 0))
+        assert.are.same({ 'workspace' }, commands.TerminalManagerList.complete('w', 'TerminalManagerList w', 0))
+        assert.are.same(
+            { '/tmp/workspace' },
+            commands.TerminalManagerList.complete('/tmp/w', 'TerminalManagerList workspace /tmp/w', 0)
+        )
+    end)
+
     it('creates a terminal through the user command surface', function()
         local plugin = require('terminal_manager')
 
