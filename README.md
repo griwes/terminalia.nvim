@@ -13,7 +13,7 @@ The current slice is intentionally small but usable:
 - update tracked cwd from OSC 7 terminal requests
 - capture durable terminal history and open it in a separate scratch view
 - expose a programmatic start/send/output/wait/kill/release control surface for downstream plugins
-- restart exited terminals in place
+- restart exited terminals in place while preserving named lowercase marks
 - auto-prune disposable terminals after exit
 - list registered terminals with cwd metadata
 

@@ -3,10 +3,157 @@ local M = {}
 local registered = false
 local view_kinds = { 'split', 'float' }
 
----@param args string
+---@param cmdline string
+---@return table?
+local function parsed_cmdline(cmdline)
+    local ok, parsed = pcall(vim.api.nvim_parse_cmd, cmdline, {})
+    if ok then
+        return parsed
+    end
+end
+
+---@param cmdline string
 ---@return string[]
-local function split_args(args)
-    return vim.split(vim.trim(args), ' ', { trimempty = true })
+local function parse_cmdline_args(cmdline)
+    local parsed = parsed_cmdline(cmdline)
+    if parsed and parsed.args then
+        return parsed.args
+    end
+
+    local stripped = cmdline:gsub('^:?%S+%s*', '', 1)
+    if stripped == '' then
+        return {}
+    end
+
+    return vim.split(vim.trim(stripped), ' ', { trimempty = true })
+end
+
+---@param command_opts table
+---@return string[]
+local function parse_command_args(command_opts)
+    if command_opts.args == nil or command_opts.args == '' then
+        return {}
+    end
+
+    if command_opts.fargs and #command_opts.fargs > 0 then
+        local has_quotes = false
+        for _, arg in ipairs(command_opts.fargs) do
+            if arg:find('"', 1, true) then
+                has_quotes = true
+                break
+            end
+        end
+
+        if not has_quotes then
+            return command_opts.fargs
+        end
+    end
+
+    local args = {}
+    local input = command_opts.args
+    local index = 1
+
+    while index <= #input do
+        while index <= #input and input:sub(index, index):match('%s') do
+            index = index + 1
+        end
+
+        if index > #input then
+            break
+        end
+
+        if input:sub(index, index) == '"' then
+            index = index + 1
+            local parts = {}
+
+            while index <= #input do
+                local char = input:sub(index, index)
+
+                if char == '\\' then
+                    local run_start = index
+
+                    while index <= #input and input:sub(index, index) == '\\' do
+                        index = index + 1
+                    end
+
+                    local backslash_run = index - run_start
+                    local next_char = input:sub(index, index)
+
+                    if next_char == '"' then
+                        if backslash_run % 2 == 1 then
+                            table.insert(parts, string.rep('\\', math.floor(backslash_run / 2)))
+                            table.insert(parts, '"')
+                            index = index + 1
+                        elseif index == #input then
+                            table.insert(parts, string.rep('\\', backslash_run))
+                            index = index + 1
+                            break
+                        else
+                            table.insert(parts, string.rep('\\', backslash_run / 2))
+                            index = index + 1
+                            break
+                        end
+                    else
+                        table.insert(parts, string.rep('\\', backslash_run))
+                    end
+                elseif char == '"' then
+                    index = index + 1
+                    break
+                else
+                    table.insert(parts, char)
+                    index = index + 1
+                end
+            end
+
+            table.insert(args, table.concat(parts))
+        else
+            local next_space = input:find('%s', index)
+            if next_space == nil then
+                table.insert(args, input:sub(index))
+                break
+            end
+
+            table.insert(args, input:sub(index, next_space - 1))
+            index = next_space + 1
+        end
+    end
+
+    return args
+end
+
+---@param cmdline string
+---@return boolean
+local function has_trailing_whitespace(cmdline)
+    return cmdline:sub(-1):match('%s') ~= nil
+end
+
+---@param cmdline string
+---@return integer
+local function completion_arg_count(cmdline)
+    local args = parse_cmdline_args(cmdline)
+
+    if has_trailing_whitespace(cmdline) then
+        return #args + 1
+    end
+
+    return #args
+end
+
+---@param cmdline string
+---@param argc integer
+---@param arglead string
+---@return boolean
+local function parsed_second_argument_boundary(cmdline, argc, arglead)
+    if argc < 3 or arglead == '' then
+        return false
+    end
+
+    local stripped = cmdline:gsub('^:?%S+%s*', '', 1)
+    if stripped == '' or stripped:find('\\') ~= nil then
+        return false
+    end
+
+    return stripped:match('^%b""%s+') ~= nil
 end
 
 ---@param arglead string
@@ -67,23 +214,61 @@ local function cwd_prefix_completions(arglead, api)
     return matching_values(arglead, prefixes)
 end
 
+---@param args string[]
+---@return string?, integer
+local function parsed_namespace_filter_from_args(args)
+    local namespace = args[1]
+    if namespace == nil or namespace == '' then
+        return nil, 0
+    end
+
+    local quoted = namespace:match('^"(.*)"$')
+    if quoted ~= nil then
+        return quoted, 1
+    end
+
+    if namespace:sub(1, 1) == '"' then
+        local parts = { namespace }
+
+        for index = 2, #args do
+            table.insert(parts, args[index])
+
+            local combined = table.concat(parts, ' '):match('^"(.*)"$')
+            if combined ~= nil then
+                return combined, index
+            end
+        end
+    end
+
+    return namespace, 1
+end
+
+---@param cmdline string
+---@return string?
+local function parsed_namespace_filter(cmdline)
+    local namespace = parsed_namespace_filter_from_args(parse_cmdline_args(cmdline))
+    return namespace
+end
+
+---@param arglead string
+---@param cmdline string
+---@param api table
+---@return string[]
+local function list_cwd_prefix_completions(arglead, cmdline, api)
+    local prefixes = {}
+    local namespace = parsed_namespace_filter(cmdline)
+
+    for _, terminal in ipairs(api.list({ namespace = namespace })) do
+        table.insert(prefixes, terminal.cwd)
+    end
+
+    return matching_values(arglead, prefixes)
+end
+
 ---@param arglead string
 ---@return string[]
 local function view_completions(arglead)
     return matching_values(arglead, view_kinds)
-end
-
----@param cmdline string
----@return string[]
-local function command_args(cmdline)
-    local stripped = cmdline:gsub('^:?%S+%s*', '', 1)
-    local args = split_args(stripped)
-
-    if cmdline:sub(-1):match('%s') then
-        table.insert(args, '')
-    end
-
-    return args
 end
 
 ---@param verb string
@@ -100,7 +285,7 @@ function M.ensure(terminal_manager)
     end
 
     local function new_terminal_command(command_opts)
-        local args = split_args(command_opts.args)
+        local args = parse_command_args(command_opts)
 
         local terminal = terminal_manager.api.create_and_open({
             name = args[1],
@@ -112,7 +297,7 @@ function M.ensure(terminal_manager)
     end
 
     local function open_terminal_command(command_opts)
-        local args = split_args(command_opts.args)
+        local args = parse_command_args(command_opts)
 
         if #args == 0 then
             error('TerminalManagerOpen requires a terminal id')
@@ -126,10 +311,11 @@ function M.ensure(terminal_manager)
     end
 
     local function list_terminals_command(command_opts)
-        local args = split_args(command_opts.args)
+        local args = parse_command_args(command_opts)
+        local namespace, namespace_argc = parsed_namespace_filter_from_args(args)
         local lines = terminal_manager.api.list_lines({
-            namespace = args[1],
-            cwd_prefix = args[2],
+            namespace = namespace,
+            cwd_prefix = args[namespace_argc + 1],
         })
 
         if #lines == 0 then
@@ -146,7 +332,7 @@ function M.ensure(terminal_manager)
     end
 
     local function history_command(command_opts)
-        local args = split_args(command_opts.args)
+        local args = parse_command_args(command_opts)
 
         if #args == 0 then
             error('TerminalManagerHistory requires a terminal id')
@@ -159,13 +345,13 @@ function M.ensure(terminal_manager)
         nargs = '*',
         desc = 'Create and reveal a terminal: [name] [namespace] [view]',
         complete = function(arglead, cmdline)
-            local args = command_args(cmdline)
+            local argc = completion_arg_count(cmdline)
 
-            if #args == 2 then
+            if argc == 2 then
                 return namespace_completions(arglead, terminal_manager.api)
             end
 
-            if #args >= 3 then
+            if argc == 3 then
                 return view_completions(arglead)
             end
 
@@ -177,13 +363,17 @@ function M.ensure(terminal_manager)
         nargs = '+',
         desc = 'Reveal an existing terminal: <id> [view]',
         complete = function(arglead, cmdline)
-            local args = command_args(cmdline)
+            local argc = completion_arg_count(cmdline)
 
-            if #args <= 1 then
+            if argc == 1 then
                 return terminal_id_completions(arglead, terminal_manager.api)
             end
 
-            return view_completions(arglead)
+            if argc == 2 then
+                return view_completions(arglead)
+            end
+
+            return {}
         end,
     })
 
@@ -191,13 +381,17 @@ function M.ensure(terminal_manager)
         nargs = '*',
         desc = 'List registered terminals: [namespace] [cwd_prefix]',
         complete = function(arglead, cmdline)
-            local args = command_args(cmdline)
+            local argc = completion_arg_count(cmdline)
 
-            if #args <= 1 then
+            if argc == 1 then
                 return namespace_completions(arglead, terminal_manager.api)
             end
 
-            return cwd_prefix_completions(arglead, terminal_manager.api)
+            if argc == 2 or parsed_second_argument_boundary(cmdline, argc, arglead) then
+                return list_cwd_prefix_completions(arglead, cmdline, terminal_manager.api)
+            end
+
+            return {}
         end,
     })
 

@@ -1,11 +1,13 @@
 local M = {}
+local config = require('terminal_manager.config')
+local native_runtime = require('terminal_manager.runtime.native')
 
 ---@param terminal terminal_manager.TerminalRecord?
 ---@param lines string[]
 ---@param cfg terminal_manager.Config
 ---@return integer
 function M.open(terminal, lines, cfg)
-    local direction = cfg.split_direction or 'botright'
+    local direction = config.normalize_split_direction(cfg.split_direction)
     local size = cfg.split_size or 12
     local name = terminal and terminal.name or 'history'
     local id = terminal and terminal.id or 'detached'
@@ -20,7 +22,7 @@ function M.open(terminal, lines, cfg)
     vim.bo[bufnr].swapfile = false
     vim.bo[bufnr].modifiable = true
     vim.bo[bufnr].filetype = 'terminalmanagerhistory'
-    vim.api.nvim_buf_set_name(bufnr, string.format('terminal-manager-history://%s/%s', id, name))
+    vim.api.nvim_buf_set_name(bufnr, string.format('terminal-manager-history://%s/%s', id, native_runtime.encode_buffer_name_component(name)))
     vim.api.nvim_win_set_buf(0, bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, #lines > 0 and lines or { '[no history captured]' })
     vim.bo[bufnr].modifiable = false

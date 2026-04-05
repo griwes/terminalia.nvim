@@ -1,3 +1,4 @@
+local config = require('terminal_manager.config')
 local history = require('terminal_manager.history')
 local model = require('terminal_manager.model')
 local persistence = require('terminal_manager.persistence')
@@ -8,6 +9,42 @@ local state = {
     next_id = 1,
     terminals = {},
 }
+
+---@return boolean
+local function persistence_enabled()
+    return require('terminal_manager.config').get().persist_terminals
+end
+
+local function teardown_state(opts)
+    local current_buf = vim.api.nvim_get_current_buf()
+
+    if vim.api.nvim_buf_is_valid(current_buf) then
+        vim.cmd('enew')
+    end
+
+    for _, terminal in pairs(state.terminals) do
+        if terminal.bufnr and vim.api.nvim_buf_is_valid(terminal.bufnr) then
+            pcall(vim.api.nvim_buf_delete, terminal.bufnr, { force = true })
+        end
+    end
+
+    state.next_id = 1
+    state.terminals = {}
+
+    if opts == nil or opts.wipe_storage ~= false then
+        history.clear_all()
+    end
+
+    if (opts == nil or opts.wipe_storage ~= false) and persistence_enabled() then
+        persistence.clear()
+    end
+end
+
+---@param bufnr? integer
+---@return boolean
+local function can_delete_buffer(bufnr)
+    return bufnr ~= nil and vim.api.nvim_buf_is_valid(bufnr) and bufnr ~= vim.api.nvim_get_current_buf()
+end
 
 ---@return string
 local function alloc_id()
@@ -26,11 +63,6 @@ local function sorted_terminals()
     end)
 
     return items
-end
-
----@return boolean
-local function persistence_enabled()
-    return require('terminal_manager.config').get().persist_terminals
 end
 
 ---@param id any
@@ -67,8 +99,17 @@ end
 ---@param opts? Partial<terminal_manager.CreateOptions>
 ---@return terminal_manager.TerminalRecord
 function M.create(opts)
-    local terminal = model.new_terminal(vim.tbl_extend('force', opts or {}, {
-        id = alloc_id(),
+    opts = opts or {}
+
+    if opts.view ~= nil and config.normalize_view(opts.view) ~= opts.view then
+        error(string.format('Unsupported terminal view: %s', opts.view))
+    end
+
+    local id = opts.id or alloc_id()
+    model.assert_valid_id(id)
+
+    local terminal = model.new_terminal(vim.tbl_extend('force', opts, {
+        id = id,
     }))
 
     state.terminals[terminal.id] = terminal
@@ -116,6 +157,8 @@ function M.update(id, patch)
     for key, value in pairs(patch) do
         if value == vim.NIL then
             terminal[key] = nil
+        elseif key == 'env' then
+            terminal[key] = model.normalize_env(value)
         else
             terminal[key] = value
         end
@@ -127,76 +170,94 @@ end
 
 ---Remove a terminal from the registry.
 ---@param id string
+---@param opts? { wipe_buffer?: boolean, clear_history?: boolean }
 ---@return terminal_manager.TerminalRecord?
-function M.remove(id)
+function M.remove(id, opts)
     local terminal = state.terminals[id]
 
     if not terminal then
         return nil
     end
 
-    if terminal.bufnr and vim.api.nvim_buf_is_valid(terminal.bufnr) then
+    local wipe_buffer = opts == nil or opts.wipe_buffer ~= false
+    local clear_history = opts == nil or opts.clear_history ~= false
+
+    if wipe_buffer and can_delete_buffer(terminal.bufnr) then
         pcall(vim.api.nvim_buf_delete, terminal.bufnr, { force = true })
     end
 
     state.terminals[id] = nil
-    history.clear(id)
+    if clear_history then
+        history.clear(id)
+    end
     persist()
 
     return terminal
 end
 
+---@param terminal terminal_manager.TerminalRecord
+---@return terminal_manager.TerminalRecord
+local function restore_with_fresh_id(terminal)
+    local restored = vim.deepcopy(terminal)
+    restored.id = alloc_id()
+    state.terminals[restored.id] = restored
+    return restored
+end
+
 ---Restore persisted terminal metadata into the registry.
----@param opts? { force?: boolean }
+---When `merge` is true, existing in-memory terminals are preserved and restored
+---records that collide on id are assigned fresh ids instead of being dropped.
+---@param opts? { force?: boolean, merge?: boolean }
 function M.restore(opts)
+    local merge = opts ~= nil and opts.merge == true
+
     if opts == nil or opts.force ~= true then
         if next(state.terminals) ~= nil then
             return
         end
     end
 
-    state.next_id = 1
-    state.terminals = {}
-
     if not persistence_enabled() then
         return
     end
 
+    if not merge then
+        teardown_state({ wipe_storage = false })
+    end
+
     local payload = persistence.load()
-    local next_id = 1
+    local collided = {}
+    local next_id = merge and state.next_id or 1
 
     for _, terminal in ipairs(payload.terminals) do
         local terminal_id = parse_terminal_index(terminal.id)
-        if terminal_id ~= nil then
+
+        if state.terminals[terminal.id] == nil then
             state.terminals[terminal.id] = terminal
-            if terminal_id >= next_id then
-                next_id = terminal_id + 1
-            end
+        elseif merge then
+            table.insert(collided, terminal)
+        end
+
+        if terminal_id ~= nil and terminal_id >= next_id then
+            next_id = terminal_id + 1
         end
     end
 
-    state.next_id = next_id
+    for _, terminal in ipairs(collided) do
+        local restored = restore_with_fresh_id(terminal)
+        local restored_id = parse_terminal_index(restored.id)
+        if restored_id ~= nil and restored_id >= next_id then
+            next_id = restored_id + 1
+        end
+    end
+
+    state.next_id = math.max(payload.next_id or 1, next_id)
 end
 
 ---Clear registry state and wipe any created terminal buffers.
 ---@param opts? { wipe_storage?: boolean }
 function M.clear(opts)
-    for _, terminal in pairs(state.terminals) do
-        if terminal.bufnr and vim.api.nvim_buf_is_valid(terminal.bufnr) then
-            pcall(vim.api.nvim_buf_delete, terminal.bufnr, { force = true })
-        end
-    end
-
-    state.next_id = 1
-    state.terminals = {}
-
-    if opts == nil or opts.wipe_storage ~= false then
-        history.clear_all()
-    end
-
-    if (opts == nil or opts.wipe_storage ~= false) and persistence_enabled() then
-        persistence.clear()
-    end
+    teardown_state(opts)
 end
 
 return M

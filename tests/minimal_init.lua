@@ -2,6 +2,8 @@ vim.g.mapleader = ' '
 vim.g.maplocalleader = ' '
 
 vim.opt.runtimepath:prepend(vim.fn.getcwd())
+vim.o.lines = 40
+vim.o.columns = 120
 
 local lazypath = vim.fn.stdpath('data') .. '/lazy/lazy.nvim'
 

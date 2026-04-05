@@ -26,6 +26,7 @@
 ---@field namespace string
 ---@field disposable boolean
 ---@field cwd string
+---@field env? table<string, string>
 ---@field status terminal_manager.TerminalStatus
 ---@field command? terminal_manager.TerminalCommand
 ---@field view terminal_manager.ViewKind
@@ -53,7 +54,33 @@
 ---@field created_at integer
 ---@field last_opened_at? integer
 
+local config = require('terminal_manager.config')
+
 local M = {}
+
+local VALID_ID_PATTERN = '^[%w:_%-]+$'
+
+---@param id any
+---@return boolean
+function M.is_valid_id(id)
+    return type(id) == 'string' and id:match(VALID_ID_PATTERN) ~= nil
+end
+
+---@param id any
+---@return string
+function M.assert_valid_id(id)
+    if not M.is_valid_id(id) then
+        error(string.format('Invalid terminal id: %s', vim.inspect(id)))
+    end
+
+    return id
+end
+
+---@param id any
+---@return boolean
+function M.is_string_id(id)
+    return type(id) == 'string' and id ~= ''
+end
 
 ---@param value any
 ---@return terminal_manager.TerminalStatus
@@ -65,20 +92,45 @@ local function normalize_status(value)
     return 'registered'
 end
 
+---@param env any
+---@return table<string, string>?
+function M.normalize_env(env)
+    if type(env) ~= 'table' then
+        return nil
+    end
+
+    local normalized = {}
+
+    for key, value in pairs(env) do
+        if type(key) == 'string' and type(value) == 'string' then
+            normalized[key] = value
+        end
+    end
+
+    if next(normalized) == nil then
+        return nil
+    end
+
+    return normalized
+end
+
 ---Create a normalized terminal record.
 ---@param opts terminal_manager.CreateOptions
 ---@return terminal_manager.TerminalRecord
 function M.new_terminal(opts)
+    M.assert_valid_id(opts.id)
+
     local cwd = opts.cwd or vim.fn.getcwd()
-    local preferred_view = opts.view or 'split'
+    local defaults = config.get()
+    local preferred_view = opts.view or defaults.default_view
 
     return {
         id = opts.id,
         name = opts.name or opts.id,
-        namespace = opts.namespace or 'default',
+        namespace = opts.namespace or defaults.default_namespace,
         disposable = opts.disposable == true,
         cwd = cwd,
-        env = opts.env and vim.deepcopy(opts.env) or nil,
+        env = M.normalize_env(opts.env),
         status = normalize_status(opts.status),
         command = opts.command,
         preferred_view = preferred_view,
@@ -92,7 +144,16 @@ end
 ---@param opts terminal_manager.CreateOptions
 ---@return terminal_manager.TerminalRecord
 function M.restore_terminal(opts)
-    local terminal = M.new_terminal(opts)
+    assert(M.is_string_id(opts.id), string.format('Invalid terminal id: %s', vim.inspect(opts.id)))
+
+    local terminal = M.new_terminal(vim.tbl_extend('force', opts, {
+        id = opts.name or 'restored_terminal',
+    }))
+
+    terminal.id = opts.id
+    terminal.name = opts.name or 'restored_terminal'
+
+    terminal.preferred_view = config.normalize_view(opts.view)
 
     if terminal.status == 'running' then
         terminal.status = 'registered'
@@ -112,6 +173,7 @@ function M.to_persisted_record(terminal)
         namespace = terminal.namespace,
         disposable = terminal.disposable,
         cwd = terminal.cwd,
+        env = M.normalize_env(terminal.env),
         status = terminal.status,
         command = terminal.command,
         view = terminal.preferred_view,

@@ -97,6 +97,14 @@ function M.set_cwd(id, cwd)
     })
 end
 
+---Update tracked terminal metadata.
+---@param id string
+---@param patch table<string, any>
+---@return terminal_manager.TerminalRecord
+function M.update(id, patch)
+    return registry.update(id, patch)
+end
+
 ---Send stdin to a started terminal job.
 ---@param id string
 ---@param data string
@@ -110,6 +118,10 @@ end
 ---@param id string
 ---@return string[]
 function M.history_lines(id)
+    local terminal = registry.get(id) or runtime.exited_terminal(id)
+
+    assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
+
     return history.read_lines(id)
 end
 
@@ -117,7 +129,10 @@ end
 ---@param id string
 ---@return terminal_manager.TerminalOutput
 function M.output(id)
-    local terminal = assert(registry.get(id), string.format('Unknown terminal id: %s', id))
+    local terminal = registry.get(id) or runtime.exited_terminal(id)
+
+    assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
+
     local output, has_live_output = runtime.output(id)
 
     if not has_live_output then
@@ -136,7 +151,14 @@ end
 ---@param timeout_ms? integer
 ---@return terminal_manager.TerminalRecord?
 function M.wait(id, timeout_ms)
-    local terminal = assert(registry.get(id), string.format('Unknown terminal id: %s', id))
+    local terminal = registry.get(id)
+
+    if terminal == nil then
+        terminal = {
+            id = id,
+        }
+    end
+
     return runtime.wait_for_exit(terminal, timeout_ms)
 end
 
@@ -152,7 +174,10 @@ end
 ---@param id string
 ---@return integer
 function M.open_history(id)
-    local terminal = assert(registry.get(id), string.format('Unknown terminal id: %s', id))
+    local terminal = registry.get(id) or runtime.exited_terminal(id)
+
+    assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
+
     local lines = history.read_lines(id)
 
     return history_view.open(terminal, lines, config.get())
@@ -172,8 +197,8 @@ function M.list_lines(filters)
                 terminal.id,
                 terminal.namespace,
                 terminal.status,
-                terminal.cwd,
-                terminal.name
+                terminal.cwd or '-',
+                terminal.name or terminal.id
             )
         )
     end
@@ -196,19 +221,38 @@ end
 ---@param id string
 ---@return terminal_manager.TerminalRecord?
 function M.release(id)
-    local terminal = assert(registry.get(id), string.format('Unknown terminal id: %s', id))
+    local registered = registry.get(id)
+    local exited = registered == nil and runtime.exited_terminal(id) or nil
+    local terminal = registered or exited
+
+    if terminal == nil then
+        history.clear(id)
+        runtime.clear_output(id)
+        return nil
+    end
+
+    if registered == nil then
+        local released = vim.deepcopy(exited)
+        history.clear(id)
+        runtime.clear_output(id)
+        runtime.forget_exited_terminal(id)
+        return released
+    end
 
     if terminal.status == 'running' then
         runtime.kill(terminal)
-        runtime.wait_for_exit(terminal, 1000)
+        terminal = runtime.wait_for_exit(terminal, 1000) or terminal
     end
 
+    history.clear(id)
     runtime.clear_output(id)
-    return registry.remove(id)
+    return registry.remove(id, { clear_history = false }) or terminal
 end
 
 ---Restore any persisted terminal metadata into the registry.
----@param opts? { force?: boolean }
+---When `merge` is true, existing in-memory terminals are preserved and restored
+---records that reuse an existing id are reassigned a fresh id.
+---@param opts? { force?: boolean, merge?: boolean }
 function M.restore(opts)
     registry.restore(opts)
 end
@@ -218,6 +262,7 @@ end
 function M.clear(opts)
     runtime.clear()
     registry.clear(opts)
+    require('terminal_manager')._reset_setup_state()
 end
 
 return M

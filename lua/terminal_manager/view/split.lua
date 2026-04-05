@@ -1,11 +1,12 @@
 local M = {}
+local config = require('terminal_manager.config')
 
 ---Reveal a terminal in a split window.
 ---@param terminal terminal_manager.TerminalRecord
 ---@param cfg terminal_manager.Config
 ---@return integer
 function M.open(terminal, cfg)
-    local direction = cfg.split_direction or 'botright'
+    local direction = config.normalize_split_direction(cfg.split_direction)
     local size = cfg.split_size or 12
     local bufnr = assert(terminal.bufnr, 'terminal buffer missing')
 

@@ -43,7 +43,7 @@ function M.load()
     local terminals = {}
 
     for _, item in ipairs(decoded.terminals or {}) do
-        if type(item) == 'table' then
+        if type(item) == 'table' and model.is_string_id(item.id) then
             table.insert(terminals, model.restore_terminal(item))
         end
     end
