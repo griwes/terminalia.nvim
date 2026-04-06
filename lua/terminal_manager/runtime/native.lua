@@ -131,6 +131,10 @@ function M.ensure_autocmds()
                 return
             end
 
+            if type(event.data) ~= 'table' or type(event.data.sequence) ~= 'string' then
+                return
+            end
+
             local directory = parse_osc7_directory(event.data.sequence)
 
             if directory == nil or registry.get(terminal_id) == nil then
@@ -158,6 +162,18 @@ local function current_terminal(id)
     return registry.get(id) or exited_disposables[id]
 end
 
+---@param listed boolean
+---@return integer
+local function create_runtime_buffer(listed)
+    local bufnr = vim.api.nvim_create_buf(listed, false)
+
+    if vim.bo[bufnr].buftype == 'nofile' then
+        vim.bo[bufnr].buftype = ''
+    end
+
+    return bufnr
+end
+
 ---@param terminal terminal_manager.TerminalRecord
 ---@return integer
 local function ensure_buffer(terminal)
@@ -165,7 +181,7 @@ local function ensure_buffer(terminal)
         return terminal.bufnr
     end
 
-    local bufnr = vim.api.nvim_create_buf(false, false)
+    local bufnr = create_runtime_buffer(false)
 
     vim.bo[bufnr].bufhidden = 'hide'
     vim.bo[bufnr].swapfile = false
@@ -216,7 +232,7 @@ local function prepare_restarted_terminal_buffer(terminal)
     capture_buffer_state(terminal)
 
     local original_bufnr = terminal.bufnr
-    local replacement_bufnr = vim.api.nvim_create_buf(false, true)
+    local replacement_bufnr = create_runtime_buffer(false)
 
     if replacement_bufnr == 0 then
         error(string.format('Failed to create buffer for terminal %s', terminal.id))

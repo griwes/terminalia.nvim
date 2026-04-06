@@ -65,6 +65,7 @@ function M.normalize(user_opts, base_opts)
     if not valid_views[normalized.default_view] then
         normalized.default_view = defaults.default_view
     end
+    normalized.split_direction = M.normalize_split_direction(normalized.split_direction)
 
     return normalized
 end
@@ -101,10 +102,9 @@ end
 
 ---Set the active configuration.
 ---@param user_opts? Partial<terminal_manager.Config>
----@param base_opts? terminal_manager.Config
 ---@return terminal_manager.Config
-function M.set(user_opts, base_opts)
-    local next_config = M.preview(user_opts, base_opts or current)
+function M.set(user_opts)
+    local next_config = M.preview(user_opts, user_opts and current or defaults)
 
     for key in pairs(current) do
         current[key] = nil

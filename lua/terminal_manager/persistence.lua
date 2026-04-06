@@ -42,9 +42,11 @@ function M.load()
     local next_id = tonumber(decoded.next_id) or 1
     local terminals = {}
 
-    for _, item in ipairs(decoded.terminals or {}) do
+    for index, item in ipairs(decoded.terminals or {}) do
         if type(item) == 'table' and model.is_string_id(item.id) then
-            table.insert(terminals, model.restore_terminal(item))
+            local restored_item = vim.deepcopy(item)
+            restored_item.restored_index = index
+            table.insert(terminals, model.restore_terminal(restored_item))
         end
     end
 

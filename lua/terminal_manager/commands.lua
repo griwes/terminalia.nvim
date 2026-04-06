@@ -139,23 +139,6 @@ local function completion_arg_count(cmdline)
     return #args
 end
 
----@param cmdline string
----@param argc integer
----@param arglead string
----@return boolean
-local function parsed_second_argument_boundary(cmdline, argc, arglead)
-    if argc < 3 or arglead == '' then
-        return false
-    end
-
-    local stripped = cmdline:gsub('^:?%S+%s*', '', 1)
-    if stripped == '' or stripped:find('\\') ~= nil then
-        return false
-    end
-
-    return stripped:match('^%b""%s+') ~= nil
-end
-
 ---@param arglead string
 ---@param values string[]
 ---@return string[]
@@ -201,19 +184,6 @@ local function namespace_completions(arglead, api)
     return matching_values(arglead, namespaces)
 end
 
----@param arglead string
----@param api table
----@return string[]
-local function cwd_prefix_completions(arglead, api)
-    local prefixes = {}
-
-    for _, terminal in ipairs(api.list()) do
-        table.insert(prefixes, terminal.cwd)
-    end
-
-    return matching_values(arglead, prefixes)
-end
-
 ---@param args string[]
 ---@return string?, integer
 local function parsed_namespace_filter_from_args(args)
@@ -243,20 +213,13 @@ local function parsed_namespace_filter_from_args(args)
     return namespace, 1
 end
 
----@param cmdline string
----@return string?
-local function parsed_namespace_filter(cmdline)
-    local namespace = parsed_namespace_filter_from_args(parse_cmdline_args(cmdline))
-    return namespace
-end
-
 ---@param arglead string
 ---@param cmdline string
 ---@param api table
 ---@return string[]
 local function list_cwd_prefix_completions(arglead, cmdline, api)
     local prefixes = {}
-    local namespace = parsed_namespace_filter(cmdline)
+    local namespace = parsed_namespace_filter_from_args(parse_cmdline_args(cmdline))
 
     for _, terminal in ipairs(api.list({ namespace = namespace })) do
         table.insert(prefixes, terminal.cwd)
@@ -387,7 +350,7 @@ function M.ensure(terminal_manager)
                 return namespace_completions(arglead, terminal_manager.api)
             end
 
-            if argc == 2 or parsed_second_argument_boundary(cmdline, argc, arglead) then
+            if argc == 2 then
                 return list_cwd_prefix_completions(arglead, cmdline, terminal_manager.api)
             end
 

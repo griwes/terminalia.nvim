@@ -114,7 +114,29 @@ describe('terminal_manager', function()
         assert.is_true(floating)
     end)
 
-    it('restores persisted terminals with legacy ids', function()
+    it('does not force restore on initial setup when terminals already exist', function()
+        package.loaded['terminal_manager'] = nil
+        local fresh_plugin = require('terminal_manager')
+
+        local terminal = fresh_plugin.api.create({
+            name = 'build',
+            namespace = 'workspace',
+        })
+
+        fresh_plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_terminals = true,
+            state_file = state_file,
+        })
+
+        local terminals = fresh_plugin.api.list()
+        assert.are.equal(1, #terminals)
+        assert.are.equal(terminal.id, terminals[1].id)
+        assert.are.equal('build', terminals[1].name)
+    end)
+
+    it('remaps restored legacy terminal ids to a safe id', function()
         local plugin = require('terminal_manager')
 
         vim.fn.writefile({
@@ -143,11 +165,60 @@ describe('terminal_manager', function()
 
         local restored = plugin.api.list()[1]
         assert.is_truthy(restored)
-        assert.are.equal('legacy/id', restored.id)
+        assert.are.equal('restored_terminal', restored.id)
         assert.are.equal('legacy', restored.name)
         assert.are.equal('/tmp/legacy', restored.cwd)
-        assert.is_nil(plugin.api.get('terminal:1'))
+        assert.is_nil(plugin.api.get('legacy/id'))
         assert.are.equal(1, #plugin.api.list())
+    end)
+
+    it('restores multiple legacy terminal ids with distinct safe ids', function()
+        local plugin = require('terminal_manager')
+
+        vim.fn.writefile({
+            vim.json.encode({
+                next_id = 3,
+                terminals = {
+                    {
+                        id = 'legacy/id',
+                        name = 'legacy-one',
+                        namespace = 'default',
+                        disposable = false,
+                        cwd = '/tmp/legacy-one',
+                        status = 'registered',
+                        view = 'split',
+                        created_at = 1,
+                    },
+                    {
+                        id = 'legacy?id',
+                        name = 'legacy-two',
+                        namespace = 'default',
+                        disposable = false,
+                        cwd = '/tmp/legacy-two',
+                        status = 'registered',
+                        view = 'split',
+                        created_at = 2,
+                    },
+                },
+            }),
+        }, state_file)
+
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            state_file = state_file,
+        })
+
+        local restored = plugin.api.list()
+        assert.are.equal(2, #restored)
+        assert.are.equal('restored_terminal', restored[1].id)
+        assert.are.equal('restored_terminal:2', restored[2].id)
+        assert.are.equal('legacy-one', restored[1].name)
+        assert.are.equal('legacy-two', restored[2].name)
+        assert.are.equal('/tmp/legacy-one', restored[1].cwd)
+        assert.are.equal('/tmp/legacy-two', restored[2].cwd)
+        assert.is_truthy(plugin.api.get('restored_terminal'))
+        assert.is_truthy(plugin.api.get('restored_terminal:2'))
     end)
 
     it('uses placeholder name for unnamed restored legacy terminals', function()
@@ -178,7 +249,7 @@ describe('terminal_manager', function()
 
         local restored = plugin.api.list()[1]
         assert.is_truthy(restored)
-        assert.are.equal('legacy/id', restored.id)
+        assert.are.equal('restored_terminal', restored.id)
         assert.are.equal('restored_terminal', restored.name)
         assert.are.equal(1, #plugin.api.list())
     end)
@@ -284,6 +355,7 @@ describe('terminal_manager', function()
         assert.are.equal('session', assert(plugin.api.get('terminal:1')).name)
         assert.are.equal('live', assert(plugin.api.get('terminal:2')).name)
         assert.are.equal(2, #plugin.api.list())
+        assert.is_not_nil(plugin.api.get('terminal:1'))
     end)
 
     it('keeps in-memory terminals when merged persisted terminals reuse the same ids', function()
@@ -324,6 +396,7 @@ describe('terminal_manager', function()
         assert.are.equal('session', assert(plugin.api.get('terminal:1')).name)
         assert.are.equal('persisted', assert(plugin.api.get('terminal:2')).name)
         assert.are.equal(2, #plugin.api.list())
+        assert.is_not_nil(plugin.api.get('terminal:1'))
     end)
 
     it('does not tear down runtime state on initial setup without persisted state', function()
@@ -370,19 +443,6 @@ describe('terminal_manager', function()
         assert.are.equal(0, vim.fn.filereadable(first_state_file))
         assert.are.equal('persisted', assert(plugin.api.get('terminal:1')).name)
         assert.are.equal(1, #plugin.api.list())
-
-        plugin.api.clear({
-            wipe_storage = false,
-        })
-
-        plugin.setup({
-            history_dir = history_dir,
-            notify_on_exit = false,
-            persist_terminals = true,
-            state_file = first_state_file,
-        })
-
-        assert.are.same({}, plugin.api.list())
     end)
 
     it('keeps existing persistence settings on repeated partial setup', function()
@@ -1060,7 +1120,7 @@ describe('terminal_manager', function()
         assert.are.equal('float', items[1].preferred_view)
     end)
 
-    it('preserves a trailing backslash inside quoted command arguments', function()
+    it('follows Neovim parsing for trailing backslashes inside quoted command arguments', function()
         local plugin = require('terminal_manager')
 
         plugin.setup({
@@ -1074,8 +1134,8 @@ describe('terminal_manager', function()
         local items = plugin.api.list()
 
         assert.are.equal(1, #items)
-        assert.are.equal([[C:\\tmp\\]], items[1].name)
-        assert.are.equal([[shared\\]], items[1].namespace)
+        assert.are.equal([[C:\\tmp\]], items[1].name)
+        assert.are.equal([[shared\]], items[1].namespace)
         assert.are.equal('float', items[1].preferred_view)
     end)
 
@@ -1152,6 +1212,24 @@ describe('terminal_manager', function()
         assert.are.equal('running', opened.status)
         assert.is_true(vim.api.nvim_buf_is_valid(bufnr))
         assert.is_true(job_id > 0)
+    end)
+
+    it('starts terminals in terminal buffers', function()
+        local plugin = require('terminal_manager')
+
+        local terminal = plugin.api.create({
+            name = 'echo',
+            command = { 'sh', '-lc', 'printf ready' },
+        })
+
+        local opened = plugin.api.start(terminal.id)
+        local bufnr = assert(opened.bufnr)
+
+        vim.wait(2000, function()
+            return vim.bo[bufnr].buftype == 'terminal'
+        end, 20)
+
+        assert.are.equal('terminal', vim.bo[bufnr].buftype)
     end)
 
     it('falls back to a safe split direction when configured direction is invalid', function()

@@ -83,9 +83,15 @@ function M.setup(opts)
         end
     end
 
-    M.config = config.set(next_config, active_config)
+    M.config = config.set(next_config)
 
     if last_persistence_config ~= nil and state_file_changed and force_restore and not merge_restore then
+        api.clear({
+            wipe_storage = false,
+        })
+    end
+
+    if last_persistence_config ~= nil and disabling_persistence and state_file_changed then
         api.clear({
             wipe_storage = false,
         })
@@ -95,7 +101,7 @@ function M.setup(opts)
     current_persistence_config = persistence_config_snapshot(M.config)
 
     api.restore({
-        force = force_restore,
+        force = last_persistence_config ~= nil and force_restore,
         merge = merge_restore,
     })
 
