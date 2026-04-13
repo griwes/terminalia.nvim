@@ -15,6 +15,8 @@ The current slice is intentionally small but usable:
 - expose a programmatic start/send/output/wait/kill/release control surface for downstream plugins
 - expose concrete `TerminalContext` records plus current-context tracking for downstream terminal providers
 - use one canonical `terminal-manager://...` URI family for live terminal buffers and terminal-history buffers
+- reopen terminal/history URIs through registered context providers even when the encoded context stack is missing in memory
+- contribute canonical terminal-URI reopen steps to `session.nvim` restore plans
 - restart exited terminals in place while preserving named lowercase marks
 - auto-prune disposable terminals after exit
 - list registered terminals with cwd metadata
@@ -41,6 +43,7 @@ Example local `lazy.nvim` spec:
 - `:TerminalManagerOpen <id> [view]`
 - `:TerminalManagerList [namespace] [cwd_prefix]`
 - `:TerminalManagerHistory <id>`
+- `:TerminalManagerOpenUri <uri> [view]`
 - `:TerminalManagerOverseerCurrent`
 - `:TerminalManagerOverseerUse <context_id>`
 - `:TerminalManagerOverseerClear`
@@ -101,6 +104,8 @@ Additional control helpers:
 - `terminal_manager.api.new_overseer_task(command, opts)`
 - `terminal_manager.api.run_overseer_task(command, opts)`
 - `terminal_manager.api.register_overseer_template(template)`
+- `terminal_manager.api.decode_uri(uri)`
+- `terminal_manager.api.open_uri(uri, opts)`
 - `terminal_manager.api.start(id)`
 - `terminal_manager.api.send(id, data)`
 - `terminal_manager.api.output(id)`

@@ -1,3 +1,5 @@
+local contexts = require('terminal_manager.contexts')
+
 local M = {}
 
 local providers = {}
@@ -51,8 +53,10 @@ end
 function M.register(kind, provider)
     assert(type(kind) == 'string' and kind ~= '', 'Context provider kind must be a non-empty string')
     assert(
-        type(provider) == 'table' and type(provider.plan_command) == 'function',
-        'Context provider must define plan_command'
+        type(provider) == 'table'
+            and type(provider.plan_command) == 'function'
+            and (provider.restore_context == nil or type(provider.restore_context) == 'function'),
+        'Context provider must define plan_command and may define restore_context'
     )
     providers[kind] = provider
 end
@@ -73,6 +77,50 @@ function M.plan_command(context, command, opts)
         string.format('No terminal context provider registered for kind: %s', context.kind)
     )
     return provider.plan_command(context, command, opts)
+end
+
+---@param context_spec terminal_manager.TerminalContext
+---@param parent_context terminal_manager.TerminalContext
+---@return terminal_manager.TerminalContext
+function M.restore_context(context_spec, parent_context)
+    if context_spec.kind == 'host' or context_spec.id == contexts.host().id then
+        return contexts.host()
+    end
+
+    local existing = contexts.get(context_spec.id)
+
+    if existing ~= nil then
+        return existing
+    end
+
+    local provider = providers[context_spec.kind]
+
+    if provider ~= nil and type(provider.restore_context) == 'function' then
+        local restored = provider.restore_context(context_spec, parent_context)
+
+        if restored ~= nil then
+            return restored
+        end
+    end
+
+    return contexts.create_child(parent_context.id, {
+        id = context_spec.id,
+        kind = context_spec.kind,
+        label = context_spec.label,
+        metadata = vim.deepcopy(context_spec.metadata or {}),
+    })
+end
+
+---@param stack terminal_manager.TerminalContext[]
+---@return terminal_manager.TerminalContext
+function M.restore_context_stack(stack)
+    local current = contexts.host()
+
+    for _, context_spec in ipairs(stack) do
+        current = M.restore_context(context_spec, current)
+    end
+
+    return current
 end
 
 M.reset()

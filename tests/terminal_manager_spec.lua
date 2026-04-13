@@ -27,6 +27,7 @@ describe('terminal_manager', function()
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
+            persist_terminals = true,
             state_file = state_file,
         })
         plugin.api.clear()
@@ -76,6 +77,123 @@ describe('terminal_manager', function()
         assert.are.equal('Host', current.label)
         assert.are.equal(1, #listed)
         assert.are.equal('context:host', listed[1].id)
+    end)
+
+    it('registers a session contributor when session.nvim is available', function()
+        local plugin = require('terminal_manager')
+        local observed = nil
+        local original_session = package.loaded.session
+
+        package.loaded.session = {
+            api = {
+                register_contributor = function(name, contributor)
+                    observed = {
+                        name = name,
+                        contributor = contributor,
+                    }
+                end,
+            },
+        }
+
+        local ok, err = pcall(function()
+            plugin.setup({
+                history_dir = history_dir,
+                notify_on_exit = false,
+                state_file = state_file,
+            })
+        end)
+
+        package.loaded.session = original_session
+
+        assert.is_true(ok, err)
+        assert.are.equal('terminal_manager', assert(observed).name)
+        assert.is_function(observed.contributor.capture)
+        assert.is_function(observed.contributor.plan_restore)
+        assert.are.same({ 'git_worktree', 'remote_workspace', 'devcontainer' }, observed.contributor.restore_after)
+    end)
+
+    it('captures terminal-manager logical state for session contributors', function()
+        local plugin = require('terminal_manager')
+        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'fixture',
+            label = 'fixture',
+        })
+
+        plugin.api.set_current_context(context.id)
+
+        local terminal = plugin.api.create({
+            name = 'build',
+            namespace = 'workspace',
+            cwd = '/tmp/workspace',
+        })
+
+        local captured = plugin.api.session_capture()
+
+        assert.are.equal(context.id, captured.current_context_id)
+        assert.are.equal(1, #captured.terminals)
+        assert.are.equal(terminal.id, captured.terminals[1].id)
+        assert.are.equal(context.id, captured.terminals[1].context_id)
+        assert.is_true(vim.startswith(captured.terminals[1].uri, 'terminal-manager://'))
+    end)
+
+    it('builds restore-plan steps from captured terminal URIs', function()
+        local plugin = require('terminal_manager')
+
+        local steps = plugin.api.session_plan_restore({
+            current_context_id = 'context:remote',
+            terminals = {
+                {
+                    id = 'terminal:1',
+                    uri = 'terminal-manager://terminal/terminal:1',
+                    name = 'build',
+                    namespace = 'workspace',
+                    preferred_view = 'float',
+                    disposable = false,
+                },
+            },
+        })
+
+        assert.are.equal(1, #steps)
+        assert.are.equal('terminal_manager.reopen_terminals', steps[1].kind)
+        assert.are.equal('terminal-manager://terminal/terminal:1', steps[1].payload.terminals[1].uri)
+    end)
+
+    it('notifies session.nvim when terminal-manager state changes', function()
+        local plugin = require('terminal_manager')
+        local notified = {}
+        local original_session = package.loaded.session
+
+        package.loaded.session = {
+            api = {
+                notify_contributor_changed = function(name)
+                    table.insert(notified, name)
+                end,
+            },
+        }
+
+        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'fixture',
+            label = 'fixture',
+        })
+        local terminal = plugin.api.create({
+            name = 'build',
+        })
+
+        plugin.api.set_current_context(context.id)
+        plugin.api.update(terminal.id, {
+            namespace = 'workspace',
+        })
+        plugin.api.delete(terminal.id)
+
+        package.loaded.session = original_session
+
+        assert.are.same({
+            'terminal_manager',
+            'terminal_manager',
+            'terminal_manager',
+            'terminal_manager',
+            'terminal_manager',
+        }, notified)
     end)
 
     it('creates child terminal contexts and can set the current context', function()
@@ -262,6 +380,7 @@ describe('terminal_manager', function()
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
+            persist_terminals = true,
             state_file = state_file,
         })
 
@@ -308,6 +427,7 @@ describe('terminal_manager', function()
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
+            persist_terminals = true,
             state_file = state_file,
         })
 
@@ -346,6 +466,7 @@ describe('terminal_manager', function()
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
+            persist_terminals = true,
             state_file = state_file,
         })
 
@@ -410,6 +531,7 @@ describe('terminal_manager', function()
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
+            persist_terminals = true,
             state_file = state_file,
         })
 
@@ -435,6 +557,7 @@ describe('terminal_manager', function()
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
+            persist_terminals = true,
             state_file = state_file,
         })
 
@@ -461,6 +584,7 @@ describe('terminal_manager', function()
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
+            persist_terminals = true,
             state_file = state_file,
         })
 
@@ -486,6 +610,7 @@ describe('terminal_manager', function()
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
+            persist_terminals = true,
             state_file = state_file,
         })
 
@@ -527,6 +652,7 @@ describe('terminal_manager', function()
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
+            persist_terminals = true,
             state_file = state_file,
         })
 
@@ -1547,18 +1673,30 @@ describe('terminal_manager', function()
 
     it('returns nil when releasing already-pruned exited disposable terminals', function()
         local plugin = require('terminal_manager')
+        local runtime = require('terminal_manager.runtime.native')
 
-        local terminal = plugin.api.create({
+        local terminal = plugin.api.create_and_open({
             name = 'echo',
             command = { 'sh', '-lc', 'printf released' },
             disposable = true,
         })
+        local bufnr = assert(terminal.bufnr)
 
-        plugin.api.start(terminal.id)
         local exited = plugin.api.wait(terminal.id, 1000)
 
         assert.are.equal('exited', assert(exited).status)
         assert.is_nil(plugin.api.get(terminal.id))
+        assert.is_not_nil(runtime.exited_terminal(terminal.id))
+
+        vim.cmd('close')
+        vim.api.nvim_exec_autocmds('BufHidden', {
+            buffer = bufnr,
+            modeline = false,
+        })
+        vim.wait(2000, function()
+            return runtime.exited_terminal(terminal.id) == nil
+        end, 20)
+
         assert.is_nil(plugin.api.release(terminal.id))
         assert.has_error(function()
             plugin.api.output(terminal.id)
@@ -1599,6 +1737,7 @@ describe('terminal_manager', function()
         assert.are.equal(terminal.id, assert(released).id)
         assert.are.equal('echo', released.name)
         assert.is_nil(runtime.exited_terminal(terminal.id))
+        assert.is_false(vim.api.nvim_buf_is_valid(bufnr))
     end)
 
     it('formats registered terminals for listing', function()
@@ -1801,6 +1940,7 @@ describe('terminal_manager', function()
 
     it('opens captured history through the user command surface', function()
         local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1823,15 +1963,13 @@ describe('terminal_manager', function()
 
         local history_bufnr = vim.api.nvim_get_current_buf()
 
-        assert.are.equal(
-            string.format('terminal-manager-history://%s/%s', terminal.id, 'build'),
-            vim.api.nvim_buf_get_name(history_bufnr)
-        )
+        assert.are.equal(uri.encode_history_uri(terminal), vim.api.nvim_buf_get_name(history_bufnr))
         assert.are.same({ 'alpha', 'beta' }, vim.api.nvim_buf_get_lines(history_bufnr, 0, -1, false))
     end)
 
     it('encodes active terminal names when opening history', function()
         local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1850,10 +1988,7 @@ describe('terminal_manager', function()
 
         plugin.api.open_history(terminal.id)
 
-        assert.are.equal(
-            string.format('terminal-manager-history://%s/%s', terminal.id, 'dir%2Fname%01'),
-            vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())
-        )
+        assert.are.equal(uri.encode_history_uri(terminal), vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf()))
     end)
 
     it('rejects unknown ids for history inspection', function()
@@ -2104,6 +2239,7 @@ describe('terminal_manager', function()
 
     it('opens history for exited disposable terminals after registry pruning', function()
         local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
 
         plugin.setup({
             history_dir = history_dir,
@@ -2126,10 +2262,7 @@ describe('terminal_manager', function()
 
         local history_bufnr = vim.api.nvim_get_current_buf()
 
-        assert.are.equal(
-            string.format('terminal-manager-history://%s/%s', terminal.id, 'scratch'),
-            vim.api.nvim_buf_get_name(history_bufnr)
-        )
+        assert.are.equal(uri.encode_history_uri(terminal), vim.api.nvim_buf_get_name(history_bufnr))
         assert.are.same({ 'done' }, vim.api.nvim_buf_get_lines(history_bufnr, 0, -1, false))
     end)
 
@@ -2465,10 +2598,17 @@ describe('terminal_manager', function()
         local child = plugin.api.create_child_context(plugin.api.host_context().id, {
             kind = 'remote_workspace',
             label = 'devbox',
+            metadata = {
+                remote_workspace_id = 'workspace:devbox',
+            },
         })
         local nested = plugin.api.create_child_context(child.id, {
             kind = 'devcontainer',
             label = 'app-dev',
+            metadata = {
+                config_path = '/tmp/devcontainer.json',
+                devcontainer_id = 'devcontainer:app',
+            },
         })
         local terminal = plugin.api.create({
             name = 'dir/name\001',
@@ -2484,6 +2624,117 @@ describe('terminal_manager', function()
         assert.are.equal(terminal.name, decoded.name)
         assert.are.equal(nested.id, decoded.context_id)
         assert.are.same({ 'context:host', child.id, nested.id }, decoded.context_stack_ids)
+        assert.are.equal('workspace:devbox', decoded.context_stack[2].metadata.remote_workspace_id)
+        assert.are.equal('devcontainer:app', decoded.context_stack[3].metadata.devcontainer_id)
+        assert.are.equal('/tmp/devcontainer.json', decoded.context_stack[3].metadata.config_path)
+    end)
+
+    it('reopens terminal-manager terminal uris and restores current context', function()
+        local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
+        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'remote_workspace',
+            label = 'devbox',
+        })
+        local terminal = plugin.api.create({
+            name = 'build',
+            command = { 'sh', '-lc', 'printf ready' },
+            context_id = context.id,
+        })
+
+        plugin.api.clear_current_context()
+
+        local reopened = plugin.api.open_uri(uri.encode_terminal_uri(terminal), {
+            view = 'float',
+        })
+
+        assert.are.equal(terminal.id, reopened.id)
+        assert.are.equal(context.id, plugin.api.current_context().id)
+    end)
+
+    it('reopens terminal-manager history uris and restores current context', function()
+        local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
+        local history = require('terminal_manager.history')
+        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'devcontainer',
+            label = 'app-dev',
+        })
+        local terminal = plugin.api.create({
+            name = 'build',
+            context_id = context.id,
+        })
+
+        history.append_chunks(terminal.id, { 'alpha', '' })
+        history.flush(terminal.id)
+        plugin.api.clear_current_context()
+
+        plugin.api.open_uri(uri.encode_history_uri(terminal))
+
+        assert.are.equal(context.id, plugin.api.current_context().id)
+        assert.are.equal(uri.encode_history_uri(terminal), vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf()))
+    end)
+
+    it('reopens terminal-manager uris and reconstructs missing provider contexts', function()
+        local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
+        local contexts = require('terminal_manager.contexts')
+
+        plugin.api.register_context_provider('fixture', {
+            plan_command = function()
+                error('unexpected plan_command use')
+            end,
+            restore_context = function(context_spec, parent_context)
+                return plugin.api.create_child_context(parent_context.id, {
+                    id = context_spec.id,
+                    kind = context_spec.kind,
+                    label = context_spec.label,
+                    metadata = vim.deepcopy(context_spec.metadata or {}),
+                })
+            end,
+        })
+
+        local fixture = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'fixture',
+            label = 'fixture-one',
+            metadata = {
+                fixture_id = 'fixture:one',
+            },
+        })
+        local terminal = plugin.api.create({
+            name = 'build',
+            command = { 'sh', '-lc', 'printf ready' },
+            context_id = fixture.id,
+        })
+        local encoded = uri.encode_terminal_uri(terminal)
+
+        contexts.clear()
+        assert.is_nil(plugin.api.get_context(fixture.id))
+
+        local reopened = plugin.api.open_uri(encoded, {
+            view = 'float',
+        })
+
+        assert.are.equal(terminal.id, reopened.id)
+        assert.are.equal(fixture.id, plugin.api.current_context().id)
+        assert.are.equal('fixture', plugin.api.current_context().kind)
+        assert.are.equal('fixture:one', plugin.api.current_context().metadata.fixture_id)
+    end)
+
+    it('opens terminal uris through the user command surface', function()
+        local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
+        local terminal = plugin.api.create({
+            name = 'build',
+            command = { 'sh', '-lc', 'printf ready' },
+        })
+
+        vim.cmd(string.format('TerminalManagerOpenUri %s float', uri.encode_terminal_uri(terminal)))
+
+        assert.are.equal(
+            uri.encode_terminal_uri(terminal),
+            vim.api.nvim_buf_get_name(assert(plugin.api.get(terminal.id)).bufnr)
+        )
     end)
 
     it('rejects malformed terminal uris clearly', function()
@@ -2492,7 +2743,34 @@ describe('terminal_manager', function()
         local decoded, err = uri.decode('terminal-manager://bogus')
 
         assert.is_nil(decoded)
-        assert.are.equal('Malformed terminal-manager URI path', err)
+        assert.are.equal('Malformed terminal-manager URI', err)
+    end)
+
+    it('rejects unknown terminal-manager uris through the api', function()
+        local plugin = require('terminal_manager')
+
+        assert.has_error(function()
+            plugin.api.open_uri(
+                'terminal-manager://terminal/contexts/host/Host/context:host/terminal/terminal:missing/build'
+            )
+        end, 'Unknown terminal id: terminal:missing')
+    end)
+
+    it('decodes context labels that contain the terminal marker literally', function()
+        local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
+        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'fixture',
+            label = 'terminal',
+        })
+        local terminal = plugin.api.create({
+            name = 'build',
+            context_id = context.id,
+        })
+
+        local decoded = assert(uri.decode(uri.encode_terminal_uri(terminal)))
+
+        assert.are.equal('terminal', decoded.context_stack[2].label)
     end)
 
     it('completes cwd prefixes for quoted namespaces', function()

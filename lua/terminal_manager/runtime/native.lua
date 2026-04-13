@@ -25,6 +25,34 @@ local function terminal_buffer_name(terminal)
     return uri.encode_terminal_uri(terminal)
 end
 
+---@param terminal terminal_manager.TerminalRecord
+---@param bufnr integer
+---@return string
+local function displaced_terminal_buffer_name(terminal, bufnr)
+    return string.format('terminal-manager-displaced://%s/%d', terminal.id, bufnr)
+end
+
+---@param target_name string
+---@param owner_bufnr integer
+---@param terminal terminal_manager.TerminalRecord
+local function displace_conflicting_buffer(target_name, owner_bufnr, terminal)
+    local existing = vim.fn.bufnr(target_name)
+
+    if existing <= 0 or existing == owner_bufnr or not vim.api.nvim_buf_is_valid(existing) then
+        return
+    end
+
+    pcall(vim.api.nvim_buf_set_name, existing, displaced_terminal_buffer_name(terminal, existing))
+end
+
+---@param bufnr integer
+---@param terminal terminal_manager.TerminalRecord
+local function set_terminal_buffer_name(bufnr, terminal)
+    local target_name = terminal_buffer_name(terminal)
+    displace_conflicting_buffer(target_name, bufnr, terminal)
+    vim.api.nvim_buf_set_name(bufnr, target_name)
+end
+
 local disposable_cleanup_group = vim.api.nvim_create_augroup('terminal-manager-disposable-cleanup', {
     clear = true,
 })
@@ -174,7 +202,7 @@ local function ensure_buffer(terminal)
 
     vim.bo[bufnr].bufhidden = 'hide'
     vim.bo[bufnr].swapfile = false
-    vim.api.nvim_buf_set_name(bufnr, terminal_buffer_name(terminal))
+    set_terminal_buffer_name(bufnr, terminal)
     vim.b[bufnr].terminal_manager_id = terminal.id
 
     registry.update(terminal.id, {
@@ -229,7 +257,7 @@ local function prepare_restarted_terminal_buffer(terminal)
 
     vim.bo[replacement_bufnr].bufhidden = 'hide'
     vim.bo[replacement_bufnr].swapfile = false
-    vim.api.nvim_buf_set_name(replacement_bufnr, terminal_buffer_name(terminal))
+    set_terminal_buffer_name(replacement_bufnr, terminal)
     vim.b[replacement_bufnr].terminal_manager_id = terminal.id
 
     local function commit()
@@ -514,6 +542,11 @@ function M.ensure_started(terminal)
     end
 
     current = assert(registry.get(current.id), string.format('Unknown terminal id: %s', current.id))
+    if current.bufnr ~= nil and vim.api.nvim_buf_is_valid(current.bufnr) then
+        set_terminal_buffer_name(current.bufnr, current)
+    elseif vim.api.nvim_buf_is_valid(bufnr) then
+        set_terminal_buffer_name(bufnr, current)
+    end
 
     return registry.update(current.id, {
         bufnr = current.bufnr or bufnr,
@@ -550,6 +583,13 @@ local function finalize_disposable(id, opts)
             return false
         end
 
+        if opts and opts.event == 'BufWipeout' then
+            vim.schedule(function()
+                finalize_disposable(id, { bufnr = bufnr })
+            end)
+            return false
+        end
+
         if opts and opts.event == 'BufHidden' then
             local post_hide_wins = visible_windows_for_buffer(bufnr)
             if #post_hide_wins > 0 then
@@ -560,8 +600,20 @@ local function finalize_disposable(id, opts)
             end
         end
 
+        if bufnr == vim.api.nvim_get_current_buf() then
+            vim.cmd('enew')
+        end
+
+        for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+            if vim.api.nvim_win_is_valid(winid) then
+                pcall(vim.api.nvim_win_set_buf, winid, vim.api.nvim_create_buf(false, true))
+            end
+        end
+
+        pending_disposable_cleanup[id] = 'finalizing'
         pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
         if vim.api.nvim_buf_is_valid(bufnr) then
+            pending_disposable_cleanup[id] = true
             return false
         end
     end
@@ -572,6 +624,19 @@ local function finalize_disposable(id, opts)
     history.clear(id)
     M.clear_output(id)
     return true
+end
+
+---@param bufnr integer
+local function detach_buffer_from_windows(bufnr)
+    if bufnr == vim.api.nvim_get_current_buf() then
+        vim.cmd('enew')
+    end
+
+    for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+        if vim.api.nvim_win_is_valid(winid) then
+            pcall(vim.api.nvim_win_set_buf, winid, vim.api.nvim_create_buf(false, true))
+        end
+    end
 end
 
 ---Write stdin data into a running terminal job, starting it first if needed.
@@ -600,10 +665,18 @@ function M.wait_for_exit(terminal, timeout_ms)
 
     if current == nil then
         local exited = exited_disposables[terminal.id]
-        if finalize_disposable(terminal.id) then
-            return exited
+
+        if exited == nil then
+            return nil
         end
-        return nil
+
+        local bufnr = exited.bufnr or disposable_bufnrs[terminal.id]
+
+        if bufnr ~= nil and vim.api.nvim_buf_is_valid(bufnr) and #visible_windows_for_buffer(bufnr) > 0 then
+            return nil
+        end
+
+        return exited
     end
 
     if current.status ~= 'running' or current.job_id == nil then
@@ -645,12 +718,6 @@ function M.wait_for_exit(terminal, timeout_ms)
         return nil
     end
 
-    if current.disposable and finalize_disposable(current.id) then
-        if registry.get(current.id) ~= nil then
-            registry.remove(current.id, { wipe_buffer = false, clear_history = false })
-        end
-    end
-
     return current
 end
 
@@ -688,6 +755,33 @@ function M.forget_exited_terminal(id)
     pending_disposable_cleanup[id] = nil
     exited_disposables[id] = nil
     disposable_bufnrs[id] = nil
+end
+
+---@param id string
+---@return terminal_manager.TerminalRecord?
+function M.release_exited_terminal(id)
+    local released = current_terminal(id)
+
+    if released == nil then
+        return nil
+    end
+
+    if not finalize_disposable(id) then
+        local bufnr = released.bufnr or disposable_bufnrs[id]
+
+        if bufnr ~= nil and vim.api.nvim_buf_is_valid(bufnr) then
+            detach_buffer_from_windows(bufnr)
+            pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+        end
+
+        pending_disposable_cleanup[id] = nil
+        exited_disposables[id] = nil
+        disposable_bufnrs[id] = nil
+        history.clear(id)
+        M.clear_output(id)
+    end
+
+    return released
 end
 
 ---Clear live output state for a terminal.

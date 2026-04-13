@@ -223,14 +223,14 @@ end
 function M.restore(opts)
     local merge = opts ~= nil and opts.merge == true
 
-    if opts == nil or opts.force ~= true then
+    if not merge and not persistence_enabled() then
+        return
+    end
+
+    if not merge and (opts == nil or opts.force ~= true) then
         if next(state.terminals) ~= nil then
             return
         end
-    end
-
-    if not persistence_enabled() then
-        return
     end
 
     if not merge then

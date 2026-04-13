@@ -22,67 +22,59 @@ local function decode_component(value)
     end))
 end
 
+---@param metadata? table<string, any>
+---@return table<{ key: string, value: string }>
+local function metadata_pairs(metadata)
+    local items = {}
+
+    if type(metadata) ~= 'table' then
+        return items
+    end
+
+    for key, value in pairs(metadata) do
+        local value_type = type(value)
+
+        if type(key) == 'string' and (value_type == 'string' or value_type == 'number' or value_type == 'boolean') then
+            table.insert(items, {
+                key = key,
+                value = tostring(value),
+            })
+        end
+    end
+
+    table.sort(items, function(left, right)
+        return left.key < right.key
+    end)
+
+    return items
+end
+
 ---@param context_id string
----@return string[]
-local function context_stack_ids(context_id)
+---@return terminal_manager.TerminalContext[]
+local function context_stack(context_id)
     local stack = {}
     local seen = {}
     local current_id = context_id
 
     while type(current_id) == 'string' and current_id ~= '' and not seen[current_id] do
         seen[current_id] = true
-        table.insert(stack, 1, current_id)
-
         local context = contexts.get(current_id)
 
         if context == nil then
+            table.insert(stack, 1, {
+                id = current_id,
+                kind = 'unknown',
+                label = current_id,
+                metadata = {},
+            })
             break
         end
 
+        table.insert(stack, 1, context)
         current_id = context.parent_id
     end
 
     return stack
-end
-
----@param params table<string, string>
----@return string
-local function encode_query(params)
-    local pieces = {}
-
-    for _, key in ipairs({ 'context', 'stack' }) do
-        local value = params[key]
-
-        if type(value) == 'string' and value ~= '' then
-            table.insert(pieces, string.format('%s=%s', key, encode_component(value)))
-        end
-    end
-
-    if #pieces == 0 then
-        return ''
-    end
-
-    return '?' .. table.concat(pieces, '&')
-end
-
----@param query string?
----@return table<string, string>
-local function decode_query(query)
-    local params = {}
-
-    if type(query) ~= 'string' or query == '' then
-        return params
-    end
-
-    for pair in query:gmatch('[^&]+') do
-        local key, value = pair:match('^([^=]+)=(.*)$')
-
-        if key ~= nil and value ~= nil then
-            params[key] = decode_component(value)
-        end
-    end
-
-    return params
 end
 
 ---@param kind 'terminal'|'history'
@@ -90,19 +82,27 @@ end
 ---@return string
 local function encode_uri(kind, terminal)
     local context_id = terminal.context_id or 'context:host'
-    local stack_ids = context_stack_ids(context_id)
+    local stack = context_stack(context_id)
+    local segments = { kind, 'contexts' }
 
-    return string.format(
-        '%s%s/%s/%s%s',
-        SCHEME,
-        kind,
-        terminal.id,
-        encode_component(terminal.name),
-        encode_query({
-            context = context_id,
-            stack = table.concat(stack_ids, ','),
-        })
-    )
+    for _, context in ipairs(stack) do
+        table.insert(segments, 'context')
+        table.insert(segments, encode_component(context.kind))
+        table.insert(segments, encode_component(context.label))
+        table.insert(segments, encode_component(context.id))
+
+        for _, item in ipairs(metadata_pairs(context.metadata)) do
+            table.insert(segments, 'meta')
+            table.insert(segments, encode_component(item.key))
+            table.insert(segments, encode_component(item.value))
+        end
+    end
+
+    table.insert(segments, 'terminal')
+    table.insert(segments, encode_component(terminal.id))
+    table.insert(segments, encode_component(terminal.name))
+
+    return SCHEME .. table.concat(segments, '/')
 end
 
 ---@param terminal terminal_manager.TerminalRecord
@@ -117,42 +117,138 @@ function M.encode_history_uri(terminal)
     return encode_uri('history', terminal)
 end
 
----@param uri string
----@return { kind: string, terminal_id: string, name: string, context_id?: string, context_stack_ids: string[] }?, string?
-function M.decode(uri)
-    if type(uri) ~= 'string' or not vim.startswith(uri, SCHEME) then
+---@param segments string[]
+---@param terminal_marker integer
+---@return { kind: string, label: string, id: string, metadata: table<string, string> }[], string[]
+local function decode_legacy_context_stack(segments, terminal_marker)
+    local context_segments = terminal_marker - 3
+
+    if context_segments < 0 or context_segments % 3 ~= 0 then
+        error('Malformed terminal-manager URI contexts')
+    end
+
+    local stack = {}
+    local stack_ids = {}
+
+    for index = 3, terminal_marker - 1, 3 do
+        local context = {
+            kind = decode_component(segments[index]),
+            label = decode_component(segments[index + 1]),
+            id = decode_component(segments[index + 2]),
+            metadata = {},
+        }
+
+        table.insert(stack, context)
+        table.insert(stack_ids, context.id)
+    end
+
+    return stack, stack_ids
+end
+
+---@param segments string[]
+---@return integer?, { kind: string, label: string, id: string, metadata: table<string, string> }[], string[]?, string?
+local function decode_context_stack(segments)
+    local stack = {}
+    local stack_ids = {}
+    local index = 3
+
+    if segments[index] ~= 'context' then
+        local legacy_terminal_marker
+
+        for legacy_index = 3, #segments do
+            if segments[legacy_index] == 'terminal' then
+                legacy_terminal_marker = legacy_index
+                break
+            end
+        end
+
+        if legacy_terminal_marker == nil or legacy_terminal_marker + 2 ~= #segments then
+            return nil, nil, nil, 'Malformed terminal-manager URI path'
+        end
+
+        local ok, legacy_stack, legacy_ids = pcall(decode_legacy_context_stack, segments, legacy_terminal_marker)
+
+        if not ok then
+            return nil, nil, nil, legacy_stack
+        end
+
+        return legacy_terminal_marker, legacy_stack, legacy_ids
+    end
+
+    while index <= #segments do
+        if segments[index] == 'terminal' then
+            return index, stack, stack_ids
+        end
+
+        if segments[index] ~= 'context' or index + 3 > #segments then
+            return nil, nil, nil, 'Malformed terminal-manager URI path'
+        end
+
+        local context = {
+            kind = decode_component(segments[index + 1]),
+            label = decode_component(segments[index + 2]),
+            id = decode_component(segments[index + 3]),
+            metadata = {},
+        }
+
+        index = index + 4
+
+        while index <= #segments and segments[index] == 'meta' do
+            if index + 2 > #segments then
+                return nil, nil, nil, 'Malformed terminal-manager URI metadata'
+            end
+
+            context.metadata[decode_component(segments[index + 1])] = decode_component(segments[index + 2])
+            index = index + 3
+        end
+
+        table.insert(stack, context)
+        table.insert(stack_ids, context.id)
+    end
+
+    return nil, nil, nil, 'Malformed terminal-manager URI path'
+end
+
+---@param uri_value string
+---@return { kind: string, terminal_id: string, name: string, context_id?: string, context_stack: { kind: string, label: string, id: string, metadata: table<string, string> }[], context_stack_ids: string[] }?, string?
+function M.decode(uri_value)
+    if type(uri_value) ~= 'string' or not vim.startswith(uri_value, SCHEME) then
         return nil, 'Unsupported terminal-manager URI'
     end
 
-    local body = uri:sub(#SCHEME + 1)
-    local path, query = body:match('^([^?]+)%??(.*)$')
+    local body = uri_value:sub(#SCHEME + 1)
+    local segments = vim.split(body, '/', { plain = true, trimempty = true })
 
-    if path == nil then
+    if #segments < 5 then
         return nil, 'Malformed terminal-manager URI'
     end
 
-    local kind, terminal_id, encoded_name = path:match('^([^/]+)/([^/]+)/(.+)$')
-
-    if kind == nil or terminal_id == nil or encoded_name == nil then
-        return nil, 'Malformed terminal-manager URI path'
-    end
+    local kind = segments[1]
 
     if kind ~= 'terminal' and kind ~= 'history' then
         return nil, string.format('Unsupported terminal-manager URI kind: %s', kind)
     end
 
-    local params = decode_query(query)
-    local stack_ids = {}
+    if segments[2] ~= 'contexts' then
+        return nil, 'Malformed terminal-manager URI path'
+    end
 
-    if params.stack ~= nil and params.stack ~= '' then
-        stack_ids = vim.split(params.stack, ',', { plain = true, trimempty = true })
+    local terminal_marker, stack, stack_ids, err = decode_context_stack(segments)
+
+    if terminal_marker == nil then
+        return nil, err
+    end
+
+    if terminal_marker + 2 ~= #segments then
+        return nil, 'Malformed terminal-manager URI path'
     end
 
     return {
         kind = kind,
-        terminal_id = terminal_id,
-        name = decode_component(encoded_name),
-        context_id = params.context,
+        terminal_id = decode_component(segments[terminal_marker + 1]),
+        name = decode_component(segments[terminal_marker + 2]),
+        context_id = stack[#stack] and stack[#stack].id or nil,
+        context_stack = stack,
         context_stack_ids = stack_ids,
     }
 end

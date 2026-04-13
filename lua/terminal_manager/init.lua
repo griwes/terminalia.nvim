@@ -75,6 +75,7 @@ function M.setup(opts)
     local state_file_changed = persistence_state_file_changed(last_persistence_config, current_persistence_config)
     local disabling_persistence = persistence_disabled(last_persistence_config, current_persistence_config)
     local force_restore = persistence_config_changed(last_persistence_config, current_persistence_config)
+        and not (disabling_persistence and not state_file_changed)
     local merge_restore = persistence_enabled_transitioned(last_persistence_config, current_persistence_config)
 
     if disabling_persistence then
@@ -90,12 +91,14 @@ function M.setup(opts)
     if last_persistence_config ~= nil and state_file_changed and force_restore and not merge_restore then
         api.clear({
             wipe_storage = false,
+            reset_setup_state = false,
         })
     end
 
     if last_persistence_config ~= nil and disabling_persistence and state_file_changed then
         api.clear({
             wipe_storage = false,
+            reset_setup_state = false,
         })
     end
 
@@ -106,6 +109,18 @@ function M.setup(opts)
         force = last_persistence_config ~= nil and force_restore,
         merge = merge_restore,
     })
+
+    local ok, session_plugin = pcall(require, 'session')
+
+    if ok and type(session_plugin) == 'table' and type(session_plugin.api) == 'table' then
+        if type(session_plugin.api.register_contributor) == 'function' then
+            session_plugin.api.register_contributor('terminal_manager', {
+                capture = api.session_capture,
+                plan_restore = api.session_plan_restore,
+                restore_after = { 'git_worktree', 'remote_workspace', 'devcontainer' },
+            })
+        end
+    end
 
     last_persistence_config = current_persistence_config
     return M.config

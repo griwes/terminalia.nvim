@@ -5,6 +5,7 @@ local history = require('terminal_manager.history')
 local overseer = require('terminal_manager.overseer')
 local registry = require('terminal_manager.registry')
 local runtime = require('terminal_manager.runtime.native')
+local uri = require('terminal_manager.uri')
 local history_view = require('terminal_manager.view.history')
 local split_view = require('terminal_manager.view.split')
 local float_view = require('terminal_manager.view.float')
@@ -14,6 +15,16 @@ local openers = {
     split = split_view.open,
     float = float_view.open,
 }
+
+local function notify_session()
+    local ok, session_plugin = pcall(require, 'session')
+
+    if ok and type(session_plugin) == 'table' and type(session_plugin.api) == 'table' then
+        if type(session_plugin.api.notify_contributor_changed) == 'function' then
+            pcall(session_plugin.api.notify_contributor_changed, 'terminal_manager')
+        end
+    end
+end
 
 ---@param terminal terminal_manager.TerminalRecord
 ---@param opts? { view?: terminal_manager.ViewKind }
@@ -38,14 +49,18 @@ end
 ---@param opts? Partial<terminal_manager.CreateOptions>
 ---@return terminal_manager.TerminalRecord
 function M.create(opts)
-    return registry.create(opts)
+    local terminal = registry.create(opts)
+    notify_session()
+    return terminal
 end
 
 ---Create a terminal context record.
 ---@param opts terminal_manager.ContextCreateOptions
 ---@return terminal_manager.TerminalContext
 function M.create_context(opts)
-    return contexts.create(opts)
+    local context = contexts.create(opts)
+    notify_session()
+    return context
 end
 
 ---Create a child terminal context record.
@@ -53,7 +68,9 @@ end
 ---@param opts? terminal_manager.ContextCreateOptions
 ---@return terminal_manager.TerminalContext
 function M.create_child_context(parent_id, opts)
-    return contexts.create_child(parent_id, opts)
+    local context = contexts.create_child(parent_id, opts)
+    notify_session()
+    return context
 end
 
 ---Return the host/root terminal context.
@@ -75,6 +92,13 @@ function M.get_context(id)
     return contexts.get(id)
 end
 
+---Restore a saved context stack through registered providers.
+---@param stack terminal_manager.TerminalContext[]
+---@return terminal_manager.TerminalContext
+function M.restore_context_stack(stack)
+    return context_providers.restore_context_stack(stack)
+end
+
 ---Return the current terminal context.
 ---@return terminal_manager.TerminalContext
 function M.current_context()
@@ -85,13 +109,17 @@ end
 ---@param id string
 ---@return terminal_manager.TerminalContext
 function M.set_current_context(id)
-    return contexts.set_current(id)
+    local context = contexts.set_current(id)
+    notify_session()
+    return context
 end
 
 ---Reset the current terminal context back to the host context.
 ---@return terminal_manager.TerminalContext
 function M.clear_current_context()
-    return contexts.clear_current()
+    local context = contexts.clear_current()
+    notify_session()
+    return context
 end
 
 ---Register a terminal context provider.
@@ -154,6 +182,42 @@ function M.register_overseer_template(template)
     overseer.register_template(template)
 end
 
+---@param uri_value string
+---@return { kind: string, terminal_id: string, name: string, context_id?: string, context_stack_ids: string[] }?, string?
+function M.decode_uri(uri_value)
+    return uri.decode(uri_value)
+end
+
+---Open a terminal-manager URI through the normal terminal/history surfaces.
+---@param uri_value string
+---@param opts? { view?: terminal_manager.ViewKind }
+---@return integer|terminal_manager.TerminalRecord
+function M.open_uri(uri_value, opts)
+    local decoded, err = uri.decode(uri_value)
+
+    if decoded == nil then
+        error(assert(err))
+    end
+
+    if decoded.context_id ~= nil then
+        local restored_context = contexts.get(decoded.context_id)
+
+        if restored_context == nil and decoded.context_stack ~= nil and #decoded.context_stack > 0 then
+            restored_context = context_providers.restore_context_stack(decoded.context_stack)
+        end
+
+        if restored_context ~= nil then
+            contexts.set_current(restored_context.id)
+        end
+    end
+
+    if decoded.kind == 'history' then
+        return M.open_history(decoded.terminal_id)
+    end
+
+    return M.open(decoded.terminal_id, opts)
+end
+
 ---Create and immediately reveal a terminal.
 ---@param opts? Partial<terminal_manager.CreateOptions>
 ---@return terminal_manager.TerminalRecord
@@ -203,14 +267,98 @@ function M.list(filters)
     return registry.list(filters)
 end
 
+---@return table
+function M.session_capture()
+    local terminals = {}
+
+    for _, terminal in ipairs(M.list()) do
+        table.insert(terminals, {
+            id = terminal.id,
+            name = terminal.name,
+            namespace = terminal.namespace,
+            cwd = terminal.cwd,
+            context_id = terminal.context_id,
+            preferred_view = terminal.preferred_view,
+            disposable = terminal.disposable,
+            status = terminal.status,
+            uri = uri.encode_terminal_uri(terminal),
+        })
+    end
+
+    return {
+        current_context_id = M.current_context().id,
+        terminals = terminals,
+    }
+end
+
+---Build restore-plan steps for captured terminal-manager session state.
+---@param captured table
+---@return session.RestorePlanStep[]
+function M.session_plan_restore(captured)
+    local terminals = type(captured) == 'table' and type(captured.terminals) == 'table' and captured.terminals or {}
+
+    if #terminals > 0 then
+        local items = {}
+
+        for _, terminal in ipairs(terminals) do
+            if type(terminal.uri) == 'string' and terminal.uri ~= '' then
+                table.insert(items, {
+                    id = terminal.id,
+                    uri = terminal.uri,
+                    name = terminal.name,
+                    namespace = terminal.namespace,
+                    preferred_view = terminal.preferred_view,
+                    disposable = terminal.disposable,
+                })
+            end
+        end
+
+        if #items > 0 then
+            return {
+                {
+                    kind = 'terminal_manager.reopen_terminals',
+                    title = 'Reopen terminal buffers',
+                    detail = string.format('Reopen %d terminal-manager terminal(s) from canonical URIs', #items),
+                    payload = {
+                        current_context_id = captured.current_context_id,
+                        terminals = items,
+                    },
+                },
+            }
+        end
+    end
+
+    if
+        type(captured) == 'table'
+        and captured.current_context_id ~= nil
+        and captured.current_context_id ~= 'context:host'
+    then
+        return {
+            {
+                kind = 'session.manual_restore',
+                title = 'Review terminal-manager context',
+                detail = 'A non-host terminal context was captured without reopenable terminal URIs',
+                payload = {
+                    current_context_id = captured.current_context_id,
+                },
+                manual = true,
+            },
+        }
+    end
+
+    return {}
+end
+
 ---Update the tracked cwd metadata for a terminal.
 ---@param id string
 ---@param cwd string
 ---@return terminal_manager.TerminalRecord
 function M.set_cwd(id, cwd)
-    return registry.update(id, {
+    local terminal = registry.update(id, {
         cwd = cwd,
     })
+    notify_session()
+    return terminal
 end
 
 ---Update tracked terminal metadata.
@@ -218,7 +366,9 @@ end
 ---@param patch table<string, any>
 ---@return terminal_manager.TerminalRecord
 function M.update(id, patch)
-    return registry.update(id, patch)
+    local terminal = registry.update(id, patch)
+    notify_session()
+    return terminal
 end
 
 ---Send stdin to a started terminal job.
@@ -348,10 +498,8 @@ function M.release(id)
     end
 
     if registered == nil then
-        local released = vim.deepcopy(exited)
-        history.clear(id)
-        runtime.clear_output(id)
-        runtime.forget_exited_terminal(id)
+        local released = runtime.release_exited_terminal(id)
+        notify_session()
         return released
     end
 
@@ -362,7 +510,9 @@ function M.release(id)
 
     history.clear(id)
     runtime.clear_output(id)
-    return registry.remove(id, { clear_history = false }) or terminal
+    local released = registry.remove(id, { clear_history = false }) or terminal
+    notify_session()
+    return released
 end
 
 ---Restore any persisted terminal metadata into the registry.
@@ -370,15 +520,23 @@ end
 ---records that reuse an existing id are reassigned a fresh id.
 ---@param opts? { force?: boolean, merge?: boolean }
 function M.restore(opts)
+    if opts ~= nil and opts.force == true and opts.merge ~= true then
+        runtime.clear()
+    end
+
     registry.restore(opts)
 end
 
 ---Reset all in-memory state.
----@param opts? { wipe_storage?: boolean }
+---@param opts? { wipe_storage?: boolean, reset_setup_state?: boolean }
 function M.clear(opts)
     runtime.clear()
     registry.clear(opts)
-    require('terminal_manager')._reset_setup_state()
+    notify_session()
+
+    if opts ~= nil and opts.wipe_storage == false and opts.reset_setup_state ~= false then
+        require('terminal_manager')._reset_setup_state()
+    end
 end
 
 return M

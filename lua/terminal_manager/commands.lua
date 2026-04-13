@@ -2,6 +2,7 @@ local M = {}
 
 local registered = false
 local view_kinds = { 'split', 'float' }
+local parsed_namespace_filter_from_args
 
 ---@param cmdline string
 ---@return table?
@@ -139,6 +140,24 @@ local function completion_arg_count(cmdline)
     return #args
 end
 
+---@param cmdline string
+---@return integer
+local function list_completion_arg_count(cmdline)
+    local args = parse_cmdline_args(cmdline)
+    local _, namespace_argc = parsed_namespace_filter_from_args(args)
+    local argc = #args
+
+    if namespace_argc > 1 then
+        argc = argc - namespace_argc + 1
+    end
+
+    if has_trailing_whitespace(cmdline) then
+        return argc + 1
+    end
+
+    return argc
+end
+
 ---@param arglead string
 ---@param values string[]
 ---@return string[]
@@ -199,7 +218,7 @@ end
 
 ---@param args string[]
 ---@return string?, integer
-local function parsed_namespace_filter_from_args(args)
+function parsed_namespace_filter_from_args(args)
     local namespace = args[1]
     if namespace == nil or namespace == '' then
         return nil, 0
@@ -317,6 +336,18 @@ function M.ensure(terminal_manager)
         terminal_manager.api.open_history(args[1])
     end
 
+    local function open_uri_command(command_opts)
+        local args = parse_command_args(command_opts)
+
+        if #args == 0 then
+            error('TerminalManagerOpenUri requires a terminal-manager URI')
+        end
+
+        terminal_manager.api.open_uri(args[1], {
+            view = args[2],
+        })
+    end
+
     vim.api.nvim_create_user_command('TerminalManagerNew', new_terminal_command, {
         nargs = '*',
         desc = 'Create and reveal a terminal: [name] [namespace] [view]',
@@ -357,7 +388,7 @@ function M.ensure(terminal_manager)
         nargs = '*',
         desc = 'List registered terminals: [namespace] [cwd_prefix]',
         complete = function(arglead, cmdline)
-            local argc = completion_arg_count(cmdline)
+            local argc = list_completion_arg_count(cmdline)
 
             if argc == 1 then
                 return namespace_completions(arglead, terminal_manager.api)
@@ -376,6 +407,20 @@ function M.ensure(terminal_manager)
         desc = 'Open captured history for a terminal: <id>',
         complete = function(arglead)
             return terminal_id_completions(arglead, terminal_manager.api)
+        end,
+    })
+
+    vim.api.nvim_create_user_command('TerminalManagerOpenUri', open_uri_command, {
+        nargs = '+',
+        desc = 'Open a terminal-manager URI: <uri> [view]',
+        complete = function(arglead, cmdline)
+            local argc = completion_arg_count(cmdline)
+
+            if argc == 2 then
+                return view_completions(arglead)
+            end
+
+            return {}
         end,
     })
 
