@@ -1,4 +1,5 @@
 local config = require('terminal_manager.config')
+local contexts = require('terminal_manager.contexts')
 local history = require('terminal_manager.history')
 local model = require('terminal_manager.model')
 local persistence = require('terminal_manager.persistence')
@@ -30,6 +31,7 @@ local function teardown_state(opts)
 
     state.next_id = 1
     state.terminals = {}
+    contexts.clear()
 
     if opts == nil or opts.wipe_storage ~= false then
         history.clear_all()
@@ -89,8 +91,13 @@ local function persist()
         return terminal.disposable == false
     end, sorted_terminals())
 
+    local context_snapshot = contexts.snapshot()
+
     persistence.save({
         next_id = state.next_id,
+        next_context_id = context_snapshot.next_context_id,
+        current_context_id = context_snapshot.current_context_id,
+        contexts = context_snapshot.contexts,
         terminals = persisted_terminals,
     })
 end
@@ -110,6 +117,7 @@ function M.create(opts)
 
     local terminal = model.new_terminal(vim.tbl_extend('force', opts, {
         id = id,
+        context_id = opts.context_id or contexts.current().id,
     }))
 
     state.terminals[terminal.id] = terminal
@@ -140,6 +148,10 @@ function M.list(filters)
         end
 
         if filters.cwd_prefix and not vim.startswith(item.cwd, filters.cwd_prefix) then
+            return false
+        end
+
+        if filters.context_id and item.context_id ~= filters.context_id then
             return false
         end
 
@@ -228,6 +240,7 @@ function M.restore(opts)
     local payload = persistence.load()
     local collided = {}
     local next_id = merge and state.next_id or 1
+    contexts.restore_payload(payload)
 
     for _, terminal in ipairs(payload.terminals) do
         local terminal_id = parse_terminal_index(terminal.id)

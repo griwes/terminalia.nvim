@@ -1,6 +1,7 @@
 local config = require('terminal_manager.config')
 local history = require('terminal_manager.history')
 local registry = require('terminal_manager.registry')
+local uri = require('terminal_manager.uri')
 
 local M = {}
 local autocmds_registered = false
@@ -18,23 +19,11 @@ local disposable_bufnrs = {}
 local buffer_state = {}
 local session_generation = 0
 
----@param name string
----@return string
-local function encode_buffer_name_component(name)
-    return (
-        name:gsub('[%z\1-\31\127/]', function(char)
-            return string.format('%%%02X', string.byte(char))
-        end)
-    )
-end
-
 ---@param terminal terminal_manager.TerminalRecord
 ---@return string
 local function terminal_buffer_name(terminal)
-    return string.format('terminal-manager://%s/%s', terminal.id, encode_buffer_name_component(terminal.name))
+    return uri.encode_terminal_uri(terminal)
 end
-
-M.encode_buffer_name_component = encode_buffer_name_component
 
 local disposable_cleanup_group = vim.api.nvim_create_augroup('terminal-manager-disposable-cleanup', {
     clear = true,

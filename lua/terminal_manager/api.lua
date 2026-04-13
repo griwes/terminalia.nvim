@@ -1,5 +1,8 @@
 local config = require('terminal_manager.config')
+local contexts = require('terminal_manager.contexts')
+local context_providers = require('terminal_manager.context_providers')
 local history = require('terminal_manager.history')
+local overseer = require('terminal_manager.overseer')
 local registry = require('terminal_manager.registry')
 local runtime = require('terminal_manager.runtime.native')
 local history_view = require('terminal_manager.view.history')
@@ -36,6 +39,119 @@ end
 ---@return terminal_manager.TerminalRecord
 function M.create(opts)
     return registry.create(opts)
+end
+
+---Create a terminal context record.
+---@param opts terminal_manager.ContextCreateOptions
+---@return terminal_manager.TerminalContext
+function M.create_context(opts)
+    return contexts.create(opts)
+end
+
+---Create a child terminal context record.
+---@param parent_id string
+---@param opts? terminal_manager.ContextCreateOptions
+---@return terminal_manager.TerminalContext
+function M.create_child_context(parent_id, opts)
+    return contexts.create_child(parent_id, opts)
+end
+
+---Return the host/root terminal context.
+---@return terminal_manager.TerminalContext
+function M.host_context()
+    return contexts.host()
+end
+
+---Return all known terminal contexts.
+---@return terminal_manager.TerminalContext[]
+function M.list_contexts()
+    return contexts.list()
+end
+
+---Return a terminal context by id.
+---@param id string
+---@return terminal_manager.TerminalContext?
+function M.get_context(id)
+    return contexts.get(id)
+end
+
+---Return the current terminal context.
+---@return terminal_manager.TerminalContext
+function M.current_context()
+    return contexts.current()
+end
+
+---Set the current terminal context.
+---@param id string
+---@return terminal_manager.TerminalContext
+function M.set_current_context(id)
+    return contexts.set_current(id)
+end
+
+---Reset the current terminal context back to the host context.
+---@return terminal_manager.TerminalContext
+function M.clear_current_context()
+    return contexts.clear_current()
+end
+
+---Register a terminal context provider.
+---@param kind string
+---@param provider table
+function M.register_context_provider(kind, provider)
+    context_providers.register(kind, provider)
+end
+
+---Return the effective Overseer context.
+---@param context_id? string
+---@return terminal_manager.TerminalContext
+function M.overseer_context(context_id)
+    return overseer.resolve_context(context_id)
+end
+
+---Set the explicit Overseer context override.
+---@param id string
+---@return terminal_manager.TerminalContext
+function M.set_overseer_context(id)
+    assert(contexts.get(id) ~= nil, string.format('Unknown terminal context id: %s', id))
+    config.set_overseer_context(id)
+    return overseer.resolve_context(id)
+end
+
+---Clear the explicit Overseer context override.
+---@return terminal_manager.TerminalContext
+function M.clear_overseer_context()
+    config.clear_overseer_context()
+    return overseer.resolve_context()
+end
+
+---Build an Overseer task definition from the current or explicit context.
+---@param command string|string[]
+---@param opts? table
+---@return table<string, any>
+function M.build_overseer_task(command, opts)
+    return overseer.build_task_definition(command, opts)
+end
+
+---Create an Overseer task from the current or explicit context.
+---@param command string|string[]
+---@param opts? table
+---@return overseer.Task
+function M.new_overseer_task(command, opts)
+    return overseer.new_task(command, opts)
+end
+
+---Create and start an Overseer task from the current or explicit context.
+---@param command string|string[]
+---@param opts? table
+---@return overseer.Task
+function M.run_overseer_task(command, opts)
+    return overseer.run_task(command, opts)
+end
+
+---Register an Overseer template through the current or explicit context.
+---@param template table
+function M.register_overseer_template(template)
+    overseer.register_template(template)
 end
 
 ---Create and immediately reveal a terminal.

@@ -61,7 +61,109 @@ describe('terminal_manager', function()
         assert.are.equal('terminal:1', terminal.id)
         assert.are.equal('build', terminal.name)
         assert.are.equal('workspace', terminal.namespace)
+        assert.are.equal('context:host', terminal.context_id)
         assert.are.same({ terminal }, plugin.api.list())
+    end)
+
+    it('tracks a current host context by default', function()
+        local plugin = require('terminal_manager')
+
+        local current = plugin.api.current_context()
+        local listed = plugin.api.list_contexts()
+
+        assert.are.equal('context:host', current.id)
+        assert.are.equal('host', current.kind)
+        assert.are.equal('Host', current.label)
+        assert.are.equal(1, #listed)
+        assert.are.equal('context:host', listed[1].id)
+    end)
+
+    it('creates child terminal contexts and can set the current context', function()
+        local plugin = require('terminal_manager')
+
+        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'devcontainer',
+            label = 'app-dev',
+            metadata = {
+                devcontainer_id = 'devcontainer:1',
+            },
+        })
+
+        local current = plugin.api.set_current_context(context.id)
+
+        assert.are.equal('devcontainer', context.kind)
+        assert.are.equal('context:host', context.parent_id)
+        assert.are.equal('app-dev', current.label)
+        assert.are.equal('devcontainer:1', current.metadata.devcontainer_id)
+    end)
+
+    it('binds created terminals to the current terminal context', function()
+        local plugin = require('terminal_manager')
+
+        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'remote_workspace',
+            label = 'devbox',
+        })
+
+        plugin.api.set_current_context(context.id)
+
+        local terminal = plugin.api.create({
+            name = 'shell',
+        })
+
+        assert.are.equal(context.id, terminal.context_id)
+        assert.are.same(
+            { terminal },
+            plugin.api.list({
+                context_id = context.id,
+            })
+        )
+    end)
+
+    it('uses the current and explicit overseer contexts separately', function()
+        local plugin = require('terminal_manager')
+
+        local fixture = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'fixture',
+            label = 'fixture',
+        })
+
+        plugin.api.register_context_provider('fixture', {
+            plan_command = function(context, command)
+                return {
+                    context = context,
+                    cmd = type(command) == 'table' and vim.deepcopy(command) or { 'sh', '-lc', command },
+                    cwd = '/tmp/fixture',
+                    default_name = 'fixture task',
+                    terminal_name = 'fixture',
+                    terminal_namespace = 'overseer',
+                    metadata = {
+                        fixture = {
+                            context_id = context.id,
+                        },
+                    },
+                }
+            end,
+        })
+
+        plugin.api.set_current_context(fixture.id)
+
+        local task = plugin.api.build_overseer_task({ 'echo', 'one' })
+
+        assert.are.equal(fixture.id, task.metadata.terminal_manager.context_id)
+        assert.are.equal(fixture.id, task.metadata.fixture.context_id)
+
+        local host = plugin.api.host_context()
+        plugin.api.set_overseer_context(host.id)
+
+        local overridden = plugin.api.build_overseer_task({ 'echo', 'two' })
+
+        assert.are.equal(host.id, plugin.api.overseer_context().id)
+        assert.are.equal(host.id, overridden.metadata.terminal_manager.context_id)
+
+        plugin.api.clear_overseer_context()
+
+        assert.are.equal(fixture.id, plugin.api.overseer_context().id)
     end)
 
     it('uses configured default namespace for new terminals', function()
@@ -283,6 +385,41 @@ describe('terminal_manager', function()
         assert.are.equal('registered', restored.status)
         assert.is_nil(restored.job_id)
         assert.is_nil(restored.bufnr)
+    end)
+
+    it('restores persisted terminal contexts and current context selection during setup', function()
+        local plugin = require('terminal_manager')
+
+        plugin.api.create_context({
+            id = 'context:devcontainer',
+            kind = 'devcontainer',
+            label = 'app-dev',
+            parent_id = 'context:host',
+            metadata = {
+                devcontainer_id = 'devcontainer:1',
+            },
+        })
+        plugin.api.set_current_context('context:devcontainer')
+        plugin.api.create({
+            name = 'build',
+        })
+        plugin.api.clear({
+            wipe_storage = false,
+        })
+
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            state_file = state_file,
+        })
+
+        local restored_context = plugin.api.current_context()
+        local restored_terminal = assert(plugin.api.get('terminal:1'))
+
+        assert.are.equal('context:devcontainer', restored_context.id)
+        assert.are.equal('devcontainer', restored_context.kind)
+        assert.are.equal('devcontainer:1', restored_context.metadata.devcontainer_id)
+        assert.are.equal('context:devcontainer', restored_terminal.context_id)
     end)
 
     it('reloads persisted terminals after clear resets setup persistence state', function()
@@ -2293,6 +2430,7 @@ describe('terminal_manager', function()
 
     it('sanitizes terminal buffer names', function()
         local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
@@ -2312,9 +2450,49 @@ describe('terminal_manager', function()
         plugin.api.open_history(terminal.id)
 
         assert.are.equal(
-            string.format('terminal-manager-history://%s/%s', terminal.id, 'dir%2Fname%01'),
+            uri.encode_history_uri({
+                id = terminal.id,
+                name = terminal.name,
+                context_id = terminal.context_id,
+            }),
             vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())
         )
+    end)
+
+    it('encodes and decodes canonical terminal uris with context stacks', function()
+        local plugin = require('terminal_manager')
+        local uri = require('terminal_manager.uri')
+        local child = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'remote_workspace',
+            label = 'devbox',
+        })
+        local nested = plugin.api.create_child_context(child.id, {
+            kind = 'devcontainer',
+            label = 'app-dev',
+        })
+        local terminal = plugin.api.create({
+            name = 'dir/name\001',
+            context_id = nested.id,
+        })
+
+        local encoded = uri.encode_terminal_uri(terminal)
+        local decoded = assert(uri.decode(encoded))
+
+        assert.are.equal(encoded, string.format('%s', encoded))
+        assert.are.equal('terminal', decoded.kind)
+        assert.are.equal(terminal.id, decoded.terminal_id)
+        assert.are.equal(terminal.name, decoded.name)
+        assert.are.equal(nested.id, decoded.context_id)
+        assert.are.same({ 'context:host', child.id, nested.id }, decoded.context_stack_ids)
+    end)
+
+    it('rejects malformed terminal uris clearly', function()
+        local uri = require('terminal_manager.uri')
+
+        local decoded, err = uri.decode('terminal-manager://bogus')
+
+        assert.is_nil(decoded)
+        assert.are.equal('Malformed terminal-manager URI path', err)
     end)
 
     it('completes cwd prefixes for quoted namespaces', function()

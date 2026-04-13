@@ -8,6 +8,8 @@
 ---@class terminal_manager.Config
 ---@field default_namespace string
 ---@field default_view terminal_manager.ViewKind
+---@field overseer_context_id? string
+---@field overseer_terminal_namespace string
 ---@field persist_terminals boolean
 ---@field persist_history boolean
 ---@field state_file string
@@ -37,6 +39,8 @@ local valid_split_directions = {
 local defaults = {
     default_namespace = 'default',
     default_view = 'split',
+    overseer_context_id = nil,
+    overseer_terminal_namespace = 'overseer',
     persist_terminals = true,
     persist_history = true,
     state_file = vim.fs.joinpath(vim.fn.stdpath('state'), 'terminal-manager.nvim', 'terminals.json'),
@@ -114,6 +118,19 @@ function M.set(user_opts)
         current[key] = value
     end
 
+    return current
+end
+
+---@param context_id? string
+---@return terminal_manager.Config
+function M.set_overseer_context(context_id)
+    current.overseer_context_id = context_id
+    return current
+end
+
+---@return terminal_manager.Config
+function M.clear_overseer_context()
+    current.overseer_context_id = nil
     return current
 end
 

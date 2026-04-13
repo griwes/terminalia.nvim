@@ -10,6 +10,7 @@
 ---@field id string
 ---@field name? string
 ---@field namespace? string
+---@field context_id? string
 ---@field disposable? boolean
 ---@field cwd? string
 ---@field env? table<string, string>
@@ -24,6 +25,7 @@
 ---@field id string
 ---@field name string
 ---@field namespace string
+---@field context_id? string
 ---@field disposable boolean
 ---@field cwd string
 ---@field env? table<string, string>
@@ -37,11 +39,37 @@
 ---@class terminal_manager.ListFilters
 ---@field namespace? string
 ---@field cwd_prefix? string
+---@field context_id? string
+
+---@class terminal_manager.ContextCreateOptions
+---@field id? string
+---@field kind? string
+---@field label? string
+---@field parent_id? string
+---@field metadata? table<string, any>
+---@field created_at? integer
+
+---@class terminal_manager.PersistedContext
+---@field id string
+---@field kind string
+---@field label string
+---@field parent_id? string
+---@field metadata? table<string, any>
+---@field created_at integer
+
+---@class terminal_manager.TerminalContext
+---@field id string
+---@field kind string
+---@field label string
+---@field parent_id? string
+---@field metadata table<string, any>
+---@field created_at integer
 
 ---@class terminal_manager.TerminalRecord
 ---@field id string
 ---@field name string
 ---@field namespace string
+---@field context_id string
 ---@field disposable boolean
 ---@field cwd string
 ---@field env? table<string, string>
@@ -143,6 +171,7 @@ function M.new_terminal(opts)
         id = opts.id,
         name = opts.name or opts.id,
         namespace = opts.namespace or defaults.default_namespace,
+        context_id = opts.context_id or 'context:host',
         disposable = opts.disposable == true,
         cwd = cwd,
         env = M.normalize_env(opts.env),
@@ -187,6 +216,7 @@ function M.to_persisted_record(terminal)
         id = terminal.id,
         name = terminal.name,
         namespace = terminal.namespace,
+        context_id = terminal.context_id,
         disposable = terminal.disposable,
         cwd = terminal.cwd,
         env = M.normalize_env(terminal.env),

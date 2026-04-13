@@ -5,6 +5,9 @@ local M = {}
 ---@class terminal_manager.PersistencePayload
 ---@field next_id integer
 ---@field terminals terminal_manager.TerminalRecord[]
+---@field next_context_id integer
+---@field current_context_id string
+---@field contexts terminal_manager.PersistedContext[]
 
 ---@return string
 local function state_file()
@@ -16,6 +19,9 @@ local function empty_payload()
     return {
         next_id = 1,
         terminals = {},
+        next_context_id = 1,
+        current_context_id = 'context:host',
+        contexts = {},
     }
 end
 
@@ -53,6 +59,10 @@ function M.load()
     return {
         next_id = next_id,
         terminals = terminals,
+        next_context_id = tonumber(decoded.next_context_id) or 1,
+        current_context_id = type(decoded.current_context_id) == 'string' and decoded.current_context_id
+            or 'context:host',
+        contexts = type(decoded.contexts) == 'table' and vim.deepcopy(decoded.contexts) or {},
     }
 end
 
@@ -65,7 +75,10 @@ function M.save(payload)
     vim.fn.writefile({
         vim.json.encode({
             next_id = payload.next_id,
+            next_context_id = payload.next_context_id,
+            current_context_id = payload.current_context_id,
             terminals = vim.tbl_map(model.to_persisted_record, payload.terminals),
+            contexts = payload.contexts,
         }),
     }, path)
 end

@@ -1,6 +1,7 @@
 local config = require('terminal_manager.config')
 local api = require('terminal_manager.api')
 local commands = require('terminal_manager.commands')
+local contexts = require('terminal_manager.contexts')
 local persistence = require('terminal_manager.persistence')
 local runtime = require('terminal_manager.runtime.native')
 
@@ -61,6 +62,7 @@ end
 
 M.config = config.get()
 M.api = api
+contexts.clear()
 commands.ensure(M)
 
 ---Configure terminal-manager.

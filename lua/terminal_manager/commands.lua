@@ -184,6 +184,19 @@ local function namespace_completions(arglead, api)
     return matching_values(arglead, namespaces)
 end
 
+---@param arglead string
+---@param api table
+---@return string[]
+local function context_id_completions(arglead, api)
+    local ids = {}
+
+    for _, context in ipairs(api.list_contexts()) do
+        table.insert(ids, context.id)
+    end
+
+    return matching_values(arglead, ids)
+end
+
 ---@param args string[]
 ---@return string?, integer
 local function parsed_namespace_filter_from_args(args)
@@ -364,6 +377,39 @@ function M.ensure(terminal_manager)
         complete = function(arglead)
             return terminal_id_completions(arglead, terminal_manager.api)
         end,
+    })
+
+    vim.api.nvim_create_user_command('TerminalManagerOverseerCurrent', function()
+        local context = terminal_manager.api.overseer_context()
+        local explicit = terminal_manager.config.overseer_context_id
+        local mode = explicit ~= nil and explicit ~= '' and 'explicit' or 'current'
+
+        vim.notify(string.format('Overseer context (%s): %s  [%s]', mode, context.id, context.label))
+    end, {
+        nargs = 0,
+        desc = 'Show the effective Overseer terminal context',
+    })
+
+    vim.api.nvim_create_user_command('TerminalManagerOverseerUse', function(command_opts)
+        local args = parse_command_args(command_opts)
+        local context = terminal_manager.api.set_overseer_context(args[1])
+
+        vim.notify(string.format('Overseer context: %s  [%s]', context.id, context.label))
+    end, {
+        nargs = 1,
+        desc = 'Set an explicit Overseer terminal context: <context_id>',
+        complete = function(arglead)
+            return context_id_completions(arglead, terminal_manager.api)
+        end,
+    })
+
+    vim.api.nvim_create_user_command('TerminalManagerOverseerClear', function()
+        local context = terminal_manager.api.clear_overseer_context()
+
+        vim.notify(string.format('Overseer context reset to current: %s  [%s]', context.id, context.label))
+    end, {
+        nargs = 0,
+        desc = 'Clear the explicit Overseer terminal context override',
     })
 
     registered = true
