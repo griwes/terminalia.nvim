@@ -1,9 +1,9 @@
 local M = {}
-local config = require('terminal_manager.config')
+local config = require('terminalia.config')
 
 ---Reveal a terminal in a split window.
----@param terminal terminal_manager.TerminalRecord
----@param cfg terminal_manager.Config
+---@param terminal terminalia.TerminalRecord
+---@param cfg terminalia.Config
 ---@return integer
 function M.open(terminal, cfg)
     local direction = config.normalize_split_direction(cfg.split_direction)

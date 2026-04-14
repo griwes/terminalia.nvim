@@ -1,4 +1,4 @@
-describe('terminal_manager', function()
+describe('terminalia', function()
     local history_dir
     local state_file
 
@@ -20,7 +20,7 @@ describe('terminal_manager', function()
     end
 
     before_each(function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         history_dir = vim.fn.tempname()
         state_file = vim.fn.tempname()
 
@@ -34,57 +34,22 @@ describe('terminal_manager', function()
     end)
 
     it('loads and exposes setup', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         assert.are.equal('function', type(plugin.setup))
         assert.are.equal('split', plugin.config.default_view)
     end)
 
-    it('rejects terminal ids with path separators', function()
-        local plugin = require('terminal_manager')
-
-        assert.has_error(function()
-            plugin.api.create({
-                id = '../escape',
-                name = 'bad',
-            })
-        end, 'Invalid terminal id: "../escape"')
+    it('exposes the branded Overseer strategy module', function()
+        assert.are.equal('function', type(require('overseer.strategy.terminalia_context').new))
     end)
 
-    it('creates an in-memory terminal record through the public api', function()
-        local plugin = require('terminal_manager')
-
-        local terminal = plugin.api.create({
-            name = 'build',
-            namespace = 'workspace',
-        })
-
-        assert.are.equal('terminal:1', terminal.id)
-        assert.are.equal('build', terminal.name)
-        assert.are.equal('workspace', terminal.namespace)
-        assert.are.equal('context:host', terminal.context_id)
-        assert.are.same({ terminal }, plugin.api.list())
-    end)
-
-    it('tracks a current host context by default', function()
-        local plugin = require('terminal_manager')
-
-        local current = plugin.api.current_context()
-        local listed = plugin.api.list_contexts()
-
-        assert.are.equal('context:host', current.id)
-        assert.are.equal('host', current.kind)
-        assert.are.equal('Host', current.label)
-        assert.are.equal(1, #listed)
-        assert.are.equal('context:host', listed[1].id)
-    end)
-
-    it('registers a session contributor when session.nvim is available', function()
-        local plugin = require('terminal_manager')
+    it('registers a session contributor when continuity.nvim is available', function()
+        local plugin = require('terminalia')
         local observed = nil
-        local original_session = package.loaded.session
+        local original_session = package.loaded.continuity
 
-        package.loaded.session = {
+        package.loaded.continuity = {
             api = {
                 register_contributor = function(name, contributor)
                     observed = {
@@ -103,17 +68,19 @@ describe('terminal_manager', function()
             })
         end)
 
-        package.loaded.session = original_session
+        package.loaded.continuity = original_session
 
         assert.is_true(ok, err)
-        assert.are.equal('terminal_manager', assert(observed).name)
+        assert.are.equal('terminalia', assert(observed).name)
         assert.is_function(observed.contributor.capture)
         assert.is_function(observed.contributor.plan_restore)
-        assert.are.same({ 'git_worktree', 'remote_workspace', 'devcontainer' }, observed.contributor.restore_after)
+        assert.is_function(observed.contributor.restore)
+        assert.are.equal('after_mksession', observed.contributor.restore_phase)
+        assert.are.same({ 'arboretum', 'consulate', 'laboratory' }, observed.contributor.restore_after)
     end)
 
     it('captures terminal-manager logical state for session contributors', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local context = plugin.api.create_child_context(plugin.api.host_context().id, {
             kind = 'fixture',
             label = 'fixture',
@@ -133,18 +100,18 @@ describe('terminal_manager', function()
         assert.are.equal(1, #captured.terminals)
         assert.are.equal(terminal.id, captured.terminals[1].id)
         assert.are.equal(context.id, captured.terminals[1].context_id)
-        assert.is_true(vim.startswith(captured.terminals[1].uri, 'terminal-manager://'))
+        assert.is_true(vim.startswith(captured.terminals[1].uri, 'terminalia://'))
     end)
 
     it('builds restore-plan steps from captured terminal URIs', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local steps = plugin.api.session_plan_restore({
             current_context_id = 'context:remote',
             terminals = {
                 {
                     id = 'terminal:1',
-                    uri = 'terminal-manager://terminal/terminal:1',
+                    uri = 'terminalia://terminal/terminal:1',
                     name = 'build',
                     namespace = 'workspace',
                     preferred_view = 'float',
@@ -154,16 +121,51 @@ describe('terminal_manager', function()
         })
 
         assert.are.equal(1, #steps)
-        assert.are.equal('terminal_manager.reopen_terminals', steps[1].kind)
-        assert.are.equal('terminal-manager://terminal/terminal:1', steps[1].payload.terminals[1].uri)
+        assert.are.equal('terminalia.reopen_terminals', steps[1].kind)
+        assert.are.equal('terminalia://terminal/terminal:1', steps[1].payload.terminals[1].uri)
     end)
 
-    it('notifies session.nvim when terminal-manager state changes', function()
-        local plugin = require('terminal_manager')
-        local notified = {}
-        local original_session = package.loaded.session
+    it('replays terminal-manager session restore steps through canonical uris', function()
+        local plugin = require('terminalia')
+        local opened = {}
+        local original_open_uri = plugin.api.open_uri
 
-        package.loaded.session = {
+        plugin.api.open_uri = function(uri, opts)
+            table.insert(opened, {
+                uri = uri,
+                opts = vim.deepcopy(opts),
+            })
+            return {
+                id = 'terminal:restored',
+            }
+        end
+
+        local restored = plugin.api.session_restore({
+            kind = 'terminalia.reopen_terminals',
+            payload = {
+                terminals = {
+                    {
+                        uri = 'terminalia://terminal/terminal:1',
+                        preferred_view = 'float',
+                    },
+                },
+            },
+        })
+
+        plugin.api.open_uri = original_open_uri
+
+        assert.are.equal(1, #opened)
+        assert.are.equal('terminalia://terminal/terminal:1', opened[1].uri)
+        assert.are.equal('float', opened[1].opts.view)
+        assert.are.equal('terminal:restored', restored[1].id)
+    end)
+
+    it('notifies continuity.nvim when terminal-manager state changes', function()
+        local plugin = require('terminalia')
+        local notified = {}
+        local original_session = package.loaded.continuity
+
+        package.loaded.continuity = {
             api = {
                 notify_contributor_changed = function(name)
                     table.insert(notified, name)
@@ -185,61 +187,19 @@ describe('terminal_manager', function()
         })
         plugin.api.delete(terminal.id)
 
-        package.loaded.session = original_session
+        package.loaded.continuity = original_session
 
         assert.are.same({
-            'terminal_manager',
-            'terminal_manager',
-            'terminal_manager',
-            'terminal_manager',
-            'terminal_manager',
+            'terminalia',
+            'terminalia',
+            'terminalia',
+            'terminalia',
+            'terminalia',
         }, notified)
     end)
 
-    it('creates child terminal contexts and can set the current context', function()
-        local plugin = require('terminal_manager')
-
-        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
-            kind = 'devcontainer',
-            label = 'app-dev',
-            metadata = {
-                devcontainer_id = 'devcontainer:1',
-            },
-        })
-
-        local current = plugin.api.set_current_context(context.id)
-
-        assert.are.equal('devcontainer', context.kind)
-        assert.are.equal('context:host', context.parent_id)
-        assert.are.equal('app-dev', current.label)
-        assert.are.equal('devcontainer:1', current.metadata.devcontainer_id)
-    end)
-
-    it('binds created terminals to the current terminal context', function()
-        local plugin = require('terminal_manager')
-
-        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
-            kind = 'remote_workspace',
-            label = 'devbox',
-        })
-
-        plugin.api.set_current_context(context.id)
-
-        local terminal = plugin.api.create({
-            name = 'shell',
-        })
-
-        assert.are.equal(context.id, terminal.context_id)
-        assert.are.same(
-            { terminal },
-            plugin.api.list({
-                context_id = context.id,
-            })
-        )
-    end)
-
     it('uses the current and explicit overseer contexts separately', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local fixture = plugin.api.create_child_context(plugin.api.host_context().id, {
             kind = 'fixture',
@@ -268,7 +228,7 @@ describe('terminal_manager', function()
 
         local task = plugin.api.build_overseer_task({ 'echo', 'one' })
 
-        assert.are.equal(fixture.id, task.metadata.terminal_manager.context_id)
+        assert.are.equal(fixture.id, task.metadata.terminalia.context_id)
         assert.are.equal(fixture.id, task.metadata.fixture.context_id)
 
         local host = plugin.api.host_context()
@@ -277,7 +237,7 @@ describe('terminal_manager', function()
         local overridden = plugin.api.build_overseer_task({ 'echo', 'two' })
 
         assert.are.equal(host.id, plugin.api.overseer_context().id)
-        assert.are.equal(host.id, overridden.metadata.terminal_manager.context_id)
+        assert.are.equal(host.id, overridden.metadata.terminalia.context_id)
 
         plugin.api.clear_overseer_context()
 
@@ -285,7 +245,7 @@ describe('terminal_manager', function()
     end)
 
     it('uses configured default namespace for new terminals', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -302,7 +262,7 @@ describe('terminal_manager', function()
     end)
 
     it('uses configured default view when opening a created terminal', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -335,8 +295,8 @@ describe('terminal_manager', function()
     end)
 
     it('does not force restore on initial setup when terminals already exist', function()
-        package.loaded['terminal_manager'] = nil
-        local fresh_plugin = require('terminal_manager')
+        package.loaded['terminalia'] = nil
+        local fresh_plugin = require('terminalia')
 
         local terminal = fresh_plugin.api.create({
             name = 'build',
@@ -357,7 +317,7 @@ describe('terminal_manager', function()
     end)
 
     it('remaps restored legacy terminal ids to a safe id', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         vim.fn.writefile({
             vim.json.encode({
@@ -394,7 +354,7 @@ describe('terminal_manager', function()
     end)
 
     it('restores multiple legacy terminal ids with distinct safe ids', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         vim.fn.writefile({
             vim.json.encode({
@@ -444,7 +404,7 @@ describe('terminal_manager', function()
     end)
 
     it('uses placeholder name for unnamed restored legacy terminals', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         vim.fn.writefile({
             vim.json.encode({
@@ -478,7 +438,7 @@ describe('terminal_manager', function()
     end)
 
     it('restores persisted terminal metadata during setup without restarting jobs', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'build',
@@ -509,7 +469,7 @@ describe('terminal_manager', function()
     end)
 
     it('restores persisted terminal contexts and current context selection during setup', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create_context({
             id = 'context:devcontainer',
@@ -545,7 +505,7 @@ describe('terminal_manager', function()
     end)
 
     it('reloads persisted terminals after clear resets setup persistence state', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'build',
@@ -568,7 +528,7 @@ describe('terminal_manager', function()
     end)
 
     it('restores persisted terminals when enabling persistence after terminals already exist', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -621,7 +581,7 @@ describe('terminal_manager', function()
     end)
 
     it('keeps in-memory terminals when merged persisted terminals reuse the same ids', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -663,7 +623,7 @@ describe('terminal_manager', function()
     end)
 
     it('does not tear down runtime state on initial setup without persisted state', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         plugin.api.create({
             name = 'session',
         })
@@ -680,7 +640,7 @@ describe('terminal_manager', function()
     end)
 
     it('clears persisted state when terminal persistence is disabled', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local first_state_file = vim.fn.tempname()
 
         plugin.setup({
@@ -709,7 +669,7 @@ describe('terminal_manager', function()
     end)
 
     it('keeps existing persistence settings on repeated partial setup', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local custom_state_file = vim.fn.tempname()
 
         plugin.setup({
@@ -729,7 +689,7 @@ describe('terminal_manager', function()
     end)
 
     it('clears both persistence files when disabling persistence and switching state files', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local first_state_file = vim.fn.tempname()
         local second_state_file = vim.fn.tempname()
 
@@ -764,7 +724,7 @@ describe('terminal_manager', function()
     end)
 
     it('tears down running terminals before force-restoring a different state file', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local first_state_file = vim.fn.tempname()
         local second_state_file = vim.fn.tempname()
 
@@ -796,7 +756,7 @@ describe('terminal_manager', function()
     end)
 
     it('wipes tracked buffers before force-restoring registry state', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -843,7 +803,7 @@ describe('terminal_manager', function()
     end)
 
     it('preserves destination persisted state when switching state files', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local first_state_file = vim.fn.tempname()
         local second_state_file = vim.fn.tempname()
 
@@ -896,7 +856,7 @@ describe('terminal_manager', function()
     end)
 
     it('reloads persisted terminals when persistence config changes', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local first_state_file = vim.fn.tempname()
         local second_state_file = vim.fn.tempname()
 
@@ -940,7 +900,7 @@ describe('terminal_manager', function()
     end)
 
     it('creates runtime buffers as unlisted buffers', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -961,7 +921,7 @@ describe('terminal_manager', function()
     end)
 
     it('sanitizes invalid env entries on update and persistence', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1004,7 +964,7 @@ describe('terminal_manager', function()
     end)
 
     it('starts terminals using the latest registry cwd and env values', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1042,7 +1002,7 @@ describe('terminal_manager', function()
     end)
 
     it('captures terminal history durably and restores it across setup', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1078,8 +1038,8 @@ describe('terminal_manager', function()
     end)
 
     it('reconstructs partial history chunks across callback boundaries', function()
-        local plugin = require('terminal_manager')
-        local history = require('terminal_manager.history')
+        local plugin = require('terminalia')
+        local history = require('terminalia.history')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1096,7 +1056,7 @@ describe('terminal_manager', function()
     end)
 
     it('does not restore disposable terminals from persisted metadata', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'scratch',
@@ -1117,7 +1077,7 @@ describe('terminal_manager', function()
     end)
 
     it('restores next_id as a lower bound while ignoring malformed terminal IDs', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local terminals = {
             {
                 id = 'terminal:1',
@@ -1181,7 +1141,7 @@ describe('terminal_manager', function()
     end)
 
     it('does not clobber active registry state on repeated setup calls', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'build',
@@ -1202,7 +1162,7 @@ describe('terminal_manager', function()
     end)
 
     it('preserves omitted paths on repeated setup', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local custom_history_dir = vim.fn.tempname()
         local custom_state_file = vim.fn.tempname()
 
@@ -1222,7 +1182,7 @@ describe('terminal_manager', function()
     end)
 
     it('preserves omitted non-path options on repeated setup', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1242,7 +1202,7 @@ describe('terminal_manager', function()
     end)
 
     it('keeps the exported config table reference fresh across setup calls', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local cached_config = plugin.config
 
         plugin.setup({
@@ -1258,28 +1218,28 @@ describe('terminal_manager', function()
     it('registers user commands on plugin load', function()
         local commands = vim.api.nvim_get_commands({})
 
-        assert.is_truthy(commands.TerminalManagerNew)
-        assert.is_truthy(commands.TerminalManagerOpen)
-        assert.is_truthy(commands.TerminalManagerList)
-        assert.is_truthy(commands.TerminalManagerHistory)
+        assert.is_truthy(commands.TerminaliaNew)
+        assert.is_truthy(commands.TerminaliaOpen)
+        assert.is_truthy(commands.TerminaliaList)
+        assert.is_truthy(commands.TerminaliaHistory)
     end)
 
     it('completes terminal ids for open and history commands', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local terminal = plugin.api.create({
             name = 'build',
             namespace = 'workspace',
         })
         local commands = vim.api.nvim_get_commands({})
 
-        assert.is_function(commands.TerminalManagerOpen.complete)
-        assert.is_function(commands.TerminalManagerHistory.complete)
-        assert.are.same({ terminal.id }, commands.TerminalManagerOpen.complete('', 'TerminalManagerOpen ', 0))
-        assert.are.same({ terminal.id }, commands.TerminalManagerHistory.complete('', 'TerminalManagerHistory ', 0))
+        assert.is_function(commands.TerminaliaOpen.complete)
+        assert.is_function(commands.TerminaliaHistory.complete)
+        assert.are.same({ terminal.id }, commands.TerminaliaOpen.complete('', 'TerminaliaOpen ', 0))
+        assert.are.same({ terminal.id }, commands.TerminaliaHistory.complete('', 'TerminaliaHistory ', 0))
     end)
 
     it('completes namespaces, cwd prefixes, and view kinds for terminal commands', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local terminal = plugin.api.create({
             name = 'build',
             namespace = 'workspace',
@@ -1288,27 +1248,21 @@ describe('terminal_manager', function()
         local commands = vim.api.nvim_get_commands({})
 
         assert.are.equal(terminal.id, plugin.api.list()[1].id)
-        assert.are.same({ 'workspace' }, commands.TerminalManagerNew.complete('w', 'TerminalManagerNew build w', 0))
-        assert.are.same(
-            { 'split' },
-            commands.TerminalManagerNew.complete('s', 'TerminalManagerNew build workspace s', 0)
-        )
-        assert.are.same({ 'float' }, commands.TerminalManagerOpen.complete('f', 'TerminalManagerOpen terminal:1 f', 0))
-        assert.are.same({ 'workspace' }, commands.TerminalManagerList.complete('w', 'TerminalManagerList w', 0))
+        assert.are.same({ 'workspace' }, commands.TerminaliaNew.complete('w', 'TerminaliaNew build w', 0))
+        assert.are.same({ 'split' }, commands.TerminaliaNew.complete('s', 'TerminaliaNew build workspace s', 0))
+        assert.are.same({ 'float' }, commands.TerminaliaOpen.complete('f', 'TerminaliaOpen terminal:1 f', 0))
+        assert.are.same({ 'workspace' }, commands.TerminaliaList.complete('w', 'TerminaliaList w', 0))
         assert.are.same(
             { '/tmp/workspace' },
-            commands.TerminalManagerList.complete('/tmp/w', 'TerminalManagerList workspace /tmp/w', 0)
+            commands.TerminaliaList.complete('/tmp/w', 'TerminaliaList workspace /tmp/w', 0)
         )
-        assert.are.same({}, commands.TerminalManagerNew.complete('', 'TerminalManagerNew build workspace split ', 0))
-        assert.are.same({}, commands.TerminalManagerOpen.complete('', 'TerminalManagerOpen terminal:1 float ', 0))
-        assert.are.same(
-            {},
-            commands.TerminalManagerList.complete('', 'TerminalManagerList workspace /tmp/workspace extra', 0)
-        )
+        assert.are.same({}, commands.TerminaliaNew.complete('', 'TerminaliaNew build workspace split ', 0))
+        assert.are.same({}, commands.TerminaliaOpen.complete('', 'TerminaliaOpen terminal:1 float ', 0))
+        assert.are.same({}, commands.TerminaliaList.complete('', 'TerminaliaList workspace /tmp/workspace extra', 0))
     end)
 
     it('creates a terminal through the user command surface', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             notify_on_exit = false,
@@ -1316,7 +1270,7 @@ describe('terminal_manager', function()
             state_file = state_file,
         })
 
-        vim.cmd('TerminalManagerNew build workspace split')
+        vim.cmd('TerminaliaNew build workspace split')
 
         local items = plugin.api.list()
 
@@ -1327,7 +1281,7 @@ describe('terminal_manager', function()
     end)
 
     it('creates a terminal with quoted multi-word command arguments', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             notify_on_exit = false,
@@ -1335,7 +1289,7 @@ describe('terminal_manager', function()
             state_file = state_file,
         })
 
-        vim.cmd([[TerminalManagerNew "build task" "shared workspace" float]])
+        vim.cmd([[TerminaliaNew "build task" "shared workspace" float]])
 
         local items = plugin.api.list()
 
@@ -1346,7 +1300,7 @@ describe('terminal_manager', function()
     end)
 
     it('creates a terminal with escaped quotes inside quoted command arguments', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             notify_on_exit = false,
@@ -1354,7 +1308,7 @@ describe('terminal_manager', function()
             state_file = state_file,
         })
 
-        vim.cmd([=[TerminalManagerNew "build \"fast\" task" "shared \"quoted\" workspace" float]=])
+        vim.cmd([=[TerminaliaNew "build \"fast\" task" "shared \"quoted\" workspace" float]=])
 
         local items = plugin.api.list()
 
@@ -1365,7 +1319,7 @@ describe('terminal_manager', function()
     end)
 
     it('preserves literal backslashes inside quoted command arguments', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             notify_on_exit = false,
@@ -1373,7 +1327,7 @@ describe('terminal_manager', function()
             state_file = state_file,
         })
 
-        vim.cmd([=[TerminalManagerNew "C:\\tmp\\build" "shared\\workspace" float]=])
+        vim.cmd([=[TerminaliaNew "C:\\tmp\\build" "shared\\workspace" float]=])
 
         local items = plugin.api.list()
 
@@ -1384,7 +1338,7 @@ describe('terminal_manager', function()
     end)
 
     it('follows Neovim parsing for trailing backslashes inside quoted command arguments', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             notify_on_exit = false,
@@ -1392,7 +1346,7 @@ describe('terminal_manager', function()
             state_file = state_file,
         })
 
-        vim.cmd([=[TerminalManagerNew "C:\\tmp\\" "shared\\" float]=])
+        vim.cmd([=[TerminaliaNew "C:\\tmp\\" "shared\\" float]=])
 
         local items = plugin.api.list()
 
@@ -1403,7 +1357,7 @@ describe('terminal_manager', function()
     end)
 
     it('preserves even backslash runs before quotes inside quoted command arguments', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             notify_on_exit = false,
@@ -1411,7 +1365,7 @@ describe('terminal_manager', function()
             state_file = state_file,
         })
 
-        vim.cmd([=[TerminalManagerNew "C:\\\"" "shared\\\"" float]=])
+        vim.cmd([=[TerminaliaNew "C:\\\"" "shared\\\"" float]=])
 
         local items = plugin.api.list()
 
@@ -1422,7 +1376,7 @@ describe('terminal_manager', function()
     end)
 
     it('treats unterminated quoted command arguments as a single trailing argument', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             notify_on_exit = false,
@@ -1430,7 +1384,7 @@ describe('terminal_manager', function()
             state_file = state_file,
         })
 
-        vim.cmd([[TerminalManagerNew "build task workspace split]])
+        vim.cmd([[TerminaliaNew "build task workspace split]])
 
         local items = plugin.api.list()
 
@@ -1441,7 +1395,7 @@ describe('terminal_manager', function()
     end)
 
     it('parses mixed quoted and unquoted command arguments with extra whitespace', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             notify_on_exit = false,
@@ -1449,7 +1403,7 @@ describe('terminal_manager', function()
             state_file = state_file,
         })
 
-        vim.cmd([[TerminalManagerNew   build   "shared workspace"   float]])
+        vim.cmd([[TerminaliaNew   build   "shared workspace"   float]])
 
         local items = plugin.api.list()
 
@@ -1460,7 +1414,7 @@ describe('terminal_manager', function()
     end)
 
     it('opens a terminal buffer through the public api', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'echo',
@@ -1478,7 +1432,7 @@ describe('terminal_manager', function()
     end)
 
     it('starts terminals in terminal buffers', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'echo',
@@ -1496,7 +1450,7 @@ describe('terminal_manager', function()
     end)
 
     it('falls back to a safe split direction when configured direction is invalid', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1519,7 +1473,7 @@ describe('terminal_manager', function()
     end)
 
     it('starts a terminal without opening a view and returns captured output', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local original_bufnr = vim.api.nvim_get_current_buf()
 
         local terminal = plugin.api.create({
@@ -1543,7 +1497,7 @@ describe('terminal_manager', function()
     end)
 
     it('returns live output even when history persistence is disabled', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1569,7 +1523,7 @@ describe('terminal_manager', function()
     end)
 
     it('passes request-scoped environment variables into the terminal job', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'env',
@@ -1586,7 +1540,7 @@ describe('terminal_manager', function()
     end)
 
     it('preserves inherited environment when extending terminal env', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local original_path = vim.env.PATH
 
         assert.is_truthy(original_path and original_path ~= '')
@@ -1613,7 +1567,7 @@ describe('terminal_manager', function()
     end)
 
     it('kills a running terminal through the public api', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'sleep',
@@ -1629,7 +1583,7 @@ describe('terminal_manager', function()
     end)
 
     it('releases a running terminal through the public api', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'sleep',
@@ -1647,7 +1601,7 @@ describe('terminal_manager', function()
     end)
 
     it('returns exited metadata when releasing disposable terminals after wait', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'echo',
@@ -1672,8 +1626,8 @@ describe('terminal_manager', function()
     end)
 
     it('returns nil when releasing already-pruned exited disposable terminals', function()
-        local plugin = require('terminal_manager')
-        local runtime = require('terminal_manager.runtime.native')
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
 
         local terminal = plugin.api.create_and_open({
             name = 'echo',
@@ -1707,8 +1661,8 @@ describe('terminal_manager', function()
     end)
 
     it('returns exited terminal metadata when releasing a known runtime terminal', function()
-        local plugin = require('terminal_manager')
-        local runtime = require('terminal_manager.runtime.native')
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
 
         local terminal = plugin.api.create_and_open({
             name = 'echo',
@@ -1741,7 +1695,7 @@ describe('terminal_manager', function()
     end)
 
     it('formats registered terminals for listing', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'build',
@@ -1755,7 +1709,7 @@ describe('terminal_manager', function()
     end)
 
     it('formats missing terminal display fields safely when listing', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         vim.fn.writefile({
             vim.json.encode({
@@ -1790,7 +1744,7 @@ describe('terminal_manager', function()
     end)
 
     it('filters listed terminals by namespace and cwd prefix', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'build',
@@ -1818,7 +1772,7 @@ describe('terminal_manager', function()
     end)
 
     it('filters listed terminals through the user command surface', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'build',
@@ -1832,7 +1786,7 @@ describe('terminal_manager', function()
         })
 
         local ok, err, notifications = with_notifications(function()
-            vim.cmd('TerminalManagerList workspace /tmp/work')
+            vim.cmd('TerminaliaList workspace /tmp/work')
         end)
 
         assert.is_true(ok, err)
@@ -1842,7 +1796,7 @@ describe('terminal_manager', function()
     end)
 
     it('filters command-line listing by namespace and cwd prefix', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'build',
@@ -1856,7 +1810,7 @@ describe('terminal_manager', function()
         })
 
         local ok, err, notifications = with_notifications(function()
-            vim.cmd('TerminalManagerList workspace /tmp/workspace')
+            vim.cmd('TerminaliaList workspace /tmp/workspace')
         end)
 
         assert.is_true(ok, err)
@@ -1866,7 +1820,7 @@ describe('terminal_manager', function()
     end)
 
     it('filters quoted namespace listings the same as completion', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'build',
@@ -1880,7 +1834,7 @@ describe('terminal_manager', function()
         })
 
         local ok, err, notifications = with_notifications(function()
-            vim.cmd([[TerminalManagerList "workspace team" /tmp/work]])
+            vim.cmd([[TerminaliaList "workspace team" /tmp/work]])
         end)
 
         assert.is_true(ok, err)
@@ -1890,7 +1844,7 @@ describe('terminal_manager', function()
     end)
 
     it('filters quoted namespace listings with multiple spaces in namespace', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.api.create({
             name = 'build',
@@ -1904,7 +1858,7 @@ describe('terminal_manager', function()
         })
 
         local ok, err, notifications = with_notifications(function()
-            vim.cmd([[TerminalManagerList "team alpha beta" /tmp/x/pro]])
+            vim.cmd([[TerminaliaList "team alpha beta" /tmp/x/pro]])
         end)
 
         assert.is_true(ok, err)
@@ -1914,7 +1868,7 @@ describe('terminal_manager', function()
     end)
 
     it('reports when command-line filters match no terminals', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local notifications = {}
         local original_notify = vim.notify
 
@@ -1928,7 +1882,7 @@ describe('terminal_manager', function()
             table.insert(notifications, message)
         end
 
-        local ok, err = pcall(vim.cmd, 'TerminalManagerList devcontainer /tmp/missing')
+        local ok, err = pcall(vim.cmd, 'TerminaliaList devcontainer /tmp/missing')
 
         vim.notify = original_notify
 
@@ -1939,8 +1893,8 @@ describe('terminal_manager', function()
     end)
 
     it('opens captured history through the user command surface', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1948,7 +1902,7 @@ describe('terminal_manager', function()
             persist_history = true,
             state_file = state_file,
         })
-        local history = require('terminal_manager.history')
+        local history = require('terminalia.history')
 
         local terminal = plugin.api.create({
             name = 'build',
@@ -1959,7 +1913,7 @@ describe('terminal_manager', function()
 
         assert.are.same({ 'alpha', 'beta' }, plugin.api.history_lines(terminal.id))
 
-        vim.cmd(string.format('TerminalManagerHistory %s', terminal.id))
+        vim.cmd(string.format('TerminaliaHistory %s', terminal.id))
 
         local history_bufnr = vim.api.nvim_get_current_buf()
 
@@ -1968,8 +1922,8 @@ describe('terminal_manager', function()
     end)
 
     it('encodes active terminal names when opening history', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
 
         plugin.setup({
             history_dir = history_dir,
@@ -1977,7 +1931,7 @@ describe('terminal_manager', function()
             persist_history = true,
             state_file = state_file,
         })
-        local history = require('terminal_manager.history')
+        local history = require('terminalia.history')
 
         local terminal = plugin.api.create({
             name = 'dir/name\001',
@@ -1992,7 +1946,7 @@ describe('terminal_manager', function()
     end)
 
     it('rejects unknown ids for history inspection', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         assert.has_error(function()
             plugin.api.open_history('terminal:missing')
@@ -2000,7 +1954,7 @@ describe('terminal_manager', function()
     end)
 
     it('rejects unknown ids for history line reads', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         assert.has_error(function()
             plugin.api.history_lines('terminal:missing')
@@ -2008,13 +1962,13 @@ describe('terminal_manager', function()
     end)
 
     it('returns nil when deleting an unknown terminal id', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         assert.is_nil(plugin.api.delete('terminal:missing'))
     end)
 
     it('rejects unsupported views before starting the terminal job', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'build',
@@ -2033,7 +1987,7 @@ describe('terminal_manager', function()
     end)
 
     it('rejects unsupported views before creating terminal records', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -2067,7 +2021,7 @@ describe('terminal_manager', function()
     end)
 
     it('restarts an exited terminal in place when reopened', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'echo',
@@ -2091,7 +2045,7 @@ describe('terminal_manager', function()
     end)
 
     it('keeps the previous exited buffer when restart startup fails', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local original_termopen = vim.fn.termopen
 
         local terminal = plugin.api.create({
@@ -2124,7 +2078,7 @@ describe('terminal_manager', function()
     end)
 
     it('preserves named lowercase marks when restarting an exited terminal in place', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'echo',
@@ -2148,7 +2102,7 @@ describe('terminal_manager', function()
     end)
 
     it('resets non-persistent live output when restarting an exited terminal', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -2176,7 +2130,7 @@ describe('terminal_manager', function()
     end)
 
     it('removes disposable terminals after exit', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create_and_open({
             name = 'scratch',
@@ -2193,7 +2147,7 @@ describe('terminal_manager', function()
     end)
 
     it('does not report pruned disposables as exited before cleanup finishes', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create_and_open({
             name = 'scratch',
@@ -2211,7 +2165,7 @@ describe('terminal_manager', function()
     end)
 
     it('returns output for exited disposable terminals after registry pruning', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -2238,8 +2192,8 @@ describe('terminal_manager', function()
     end)
 
     it('opens history for exited disposable terminals after registry pruning', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
 
         plugin.setup({
             history_dir = history_dir,
@@ -2267,8 +2221,8 @@ describe('terminal_manager', function()
     end)
 
     it('falls back to the configured default view when restoring an unsupported persisted view', function()
-        local plugin = require('terminal_manager')
-        local history = require('terminal_manager.history')
+        local plugin = require('terminalia')
+        local history = require('terminalia.history')
 
         vim.fn.writefile({
             vim.json.encode({
@@ -2311,7 +2265,7 @@ describe('terminal_manager', function()
     end)
 
     it('keeps never-started disposable terminals available when waiting', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create({
             name = 'scratch',
@@ -2336,7 +2290,7 @@ describe('terminal_manager', function()
     end)
 
     it('preserves disposable history until cleanup is finalized', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -2377,7 +2331,7 @@ describe('terminal_manager', function()
     end)
 
     it('does not finalize disposable cleanup for unrelated buffer events', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         plugin.setup({
             history_dir = history_dir,
@@ -2408,7 +2362,7 @@ describe('terminal_manager', function()
     end)
 
     it('keeps a visible disposable terminal buffer until the window closes', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         local terminal = plugin.api.create_and_open({
             name = 'scratch',
@@ -2431,7 +2385,7 @@ describe('terminal_manager', function()
     end)
 
     it('preserves terminal buffer when hidden startup fails', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local original_termopen = vim.fn.termopen
         local terminal
 
@@ -2478,8 +2432,8 @@ describe('terminal_manager', function()
     end)
 
     it('keeps cleanup pending until the current disposable buffer loses focus', function()
-        local plugin = require('terminal_manager')
-        local runtime = require('terminal_manager.runtime.native')
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
 
         local terminal = plugin.api.create_and_open({
             name = 'scratch',
@@ -2513,7 +2467,7 @@ describe('terminal_manager', function()
     end)
 
     it('updates cwd metadata from OSC 7 terminal requests', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local cwd = vim.fn.tempname()
 
         vim.fn.mkdir(cwd, 'p')
@@ -2538,7 +2492,7 @@ describe('terminal_manager', function()
     end)
 
     it('ignores OSC 7 requests for unmanaged buffers', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local bufnr = vim.api.nvim_create_buf(false, true)
         local cwd = vim.fn.tempname()
 
@@ -2562,8 +2516,8 @@ describe('terminal_manager', function()
     end)
 
     it('sanitizes terminal buffer names', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
@@ -2571,7 +2525,7 @@ describe('terminal_manager', function()
             state_file = state_file,
         })
         plugin.api.clear()
-        local history = require('terminal_manager.history')
+        local history = require('terminalia.history')
 
         local terminal = plugin.api.create({
             disposable = true,
@@ -2593,8 +2547,8 @@ describe('terminal_manager', function()
     end)
 
     it('encodes and decodes canonical terminal uris with context stacks', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
         local child = plugin.api.create_child_context(plugin.api.host_context().id, {
             kind = 'remote_workspace',
             label = 'devbox',
@@ -2606,7 +2560,7 @@ describe('terminal_manager', function()
             kind = 'devcontainer',
             label = 'app-dev',
             metadata = {
-                config_path = '/tmp/devcontainer.json',
+                config_path = '/tmp/laboratory.json',
                 devcontainer_id = 'devcontainer:app',
             },
         })
@@ -2626,12 +2580,12 @@ describe('terminal_manager', function()
         assert.are.same({ 'context:host', child.id, nested.id }, decoded.context_stack_ids)
         assert.are.equal('workspace:devbox', decoded.context_stack[2].metadata.remote_workspace_id)
         assert.are.equal('devcontainer:app', decoded.context_stack[3].metadata.devcontainer_id)
-        assert.are.equal('/tmp/devcontainer.json', decoded.context_stack[3].metadata.config_path)
+        assert.are.equal('/tmp/laboratory.json', decoded.context_stack[3].metadata.config_path)
     end)
 
     it('reopens terminal-manager terminal uris and restores current context', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
         local context = plugin.api.create_child_context(plugin.api.host_context().id, {
             kind = 'remote_workspace',
             label = 'devbox',
@@ -2653,9 +2607,9 @@ describe('terminal_manager', function()
     end)
 
     it('reopens terminal-manager history uris and restores current context', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
-        local history = require('terminal_manager.history')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
+        local history = require('terminalia.history')
         local context = plugin.api.create_child_context(plugin.api.host_context().id, {
             kind = 'devcontainer',
             label = 'app-dev',
@@ -2676,9 +2630,9 @@ describe('terminal_manager', function()
     end)
 
     it('reopens terminal-manager uris and reconstructs missing provider contexts', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
-        local contexts = require('terminal_manager.contexts')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
+        local contexts = require('terminalia.context.state')
 
         plugin.api.register_context_provider('fixture', {
             plan_command = function()
@@ -2722,14 +2676,14 @@ describe('terminal_manager', function()
     end)
 
     it('opens terminal uris through the user command surface', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
         local terminal = plugin.api.create({
             name = 'build',
             command = { 'sh', '-lc', 'printf ready' },
         })
 
-        vim.cmd(string.format('TerminalManagerOpenUri %s float', uri.encode_terminal_uri(terminal)))
+        vim.cmd(string.format('TerminaliaOpenUri %s float', uri.encode_terminal_uri(terminal)))
 
         assert.are.equal(
             uri.encode_terminal_uri(terminal),
@@ -2738,27 +2692,25 @@ describe('terminal_manager', function()
     end)
 
     it('rejects malformed terminal uris clearly', function()
-        local uri = require('terminal_manager.uri')
+        local uri = require('terminalia.uri')
 
-        local decoded, err = uri.decode('terminal-manager://bogus')
+        local decoded, err = uri.decode('terminalia://bogus')
 
         assert.is_nil(decoded)
-        assert.are.equal('Malformed terminal-manager URI', err)
+        assert.are.equal('Malformed Terminalia URI', err)
     end)
 
     it('rejects unknown terminal-manager uris through the api', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
 
         assert.has_error(function()
-            plugin.api.open_uri(
-                'terminal-manager://terminal/contexts/host/Host/context:host/terminal/terminal:missing/build'
-            )
+            plugin.api.open_uri('terminalia://terminal/contexts/host/Host/context:host/terminal/terminal:missing/build')
         end, 'Unknown terminal id: terminal:missing')
     end)
 
     it('decodes context labels that contain the terminal marker literally', function()
-        local plugin = require('terminal_manager')
-        local uri = require('terminal_manager.uri')
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
         local context = plugin.api.create_child_context(plugin.api.host_context().id, {
             kind = 'fixture',
             label = 'terminal',
@@ -2774,7 +2726,7 @@ describe('terminal_manager', function()
     end)
 
     it('completes cwd prefixes for quoted namespaces', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local commands = vim.api.nvim_get_commands({})
         plugin.setup({
             history_dir = history_dir,
@@ -2791,11 +2743,11 @@ describe('terminal_manager', function()
 
         assert.are.same({
             '/tmp/workspace dir',
-        }, commands.TerminalManagerList.complete('/tmp/w', [[TerminalManagerList "workspace team" /tmp/w]], 0))
+        }, commands.TerminaliaList.complete('/tmp/w', [[TerminaliaList "workspace team" /tmp/w]], 0))
     end)
 
     it('does not guess completion state from stray quote text', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local commands = vim.api.nvim_get_commands({})
 
         plugin.api.create({
@@ -2804,11 +2756,11 @@ describe('terminal_manager', function()
             cwd = '/tmp/workspace',
         })
 
-        assert.are.same({}, commands.TerminalManagerList.complete('', [[TerminalManagerList workspace " ]], 0))
+        assert.are.same({}, commands.TerminaliaList.complete('', [[TerminaliaList workspace " ]], 0))
     end)
 
     it('treats Ex metacharacter prefixes as literal completion args', function()
-        local plugin = require('terminal_manager')
+        local plugin = require('terminalia')
         local commands = vim.api.nvim_get_commands({})
 
         plugin.api.create({
@@ -2817,10 +2769,7 @@ describe('terminal_manager', function()
             cwd = '%/tmp/workspace',
         })
 
-        assert.are.same({ '|workspace' }, commands.TerminalManagerList.complete('|', 'TerminalManagerList |', 0))
-        assert.are.same(
-            { '%/tmp/workspace' },
-            commands.TerminalManagerList.complete('', 'TerminalManagerList |workspace ', 0)
-        )
+        assert.are.same({ '|workspace' }, commands.TerminaliaList.complete('|', 'TerminaliaList |', 0))
+        assert.are.same({ '%/tmp/workspace' }, commands.TerminaliaList.complete('', 'TerminaliaList |workspace ', 0))
     end)
 end)

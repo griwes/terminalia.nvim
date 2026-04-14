@@ -1,8 +1,8 @@
-local config = require('terminal_manager.config')
-local contexts = require('terminal_manager.contexts')
-local history = require('terminal_manager.history')
-local model = require('terminal_manager.model')
-local persistence = require('terminal_manager.persistence')
+local config = require('terminalia.config')
+local contexts = require('terminalia.context.state')
+local history = require('terminalia.history')
+local model = require('terminalia.terminal.model')
+local persistence = require('terminalia.persistence')
 
 local M = {}
 
@@ -13,7 +13,7 @@ local state = {
 
 ---@return boolean
 local function persistence_enabled()
-    return require('terminal_manager.config').get().persist_terminals
+    return require('terminalia.config').get().persist_terminals
 end
 
 local function teardown_state(opts)
@@ -55,9 +55,9 @@ local function alloc_id()
     return id
 end
 
----@return terminal_manager.TerminalRecord[]
+---@return terminalia.TerminalRecord[]
 local function sorted_terminals()
-    ---@type terminal_manager.TerminalRecord[]
+    ---@type terminalia.TerminalRecord[]
     local items = vim.tbl_values(state.terminals)
 
     table.sort(items, function(left, right)
@@ -103,8 +103,8 @@ local function persist()
 end
 
 ---Create a new terminal record and register it.
----@param opts? Partial<terminal_manager.CreateOptions>
----@return terminal_manager.TerminalRecord
+---@param opts? Partial<terminalia.CreateOptions>
+---@return terminalia.TerminalRecord
 function M.create(opts)
     opts = opts or {}
 
@@ -127,14 +127,14 @@ end
 
 ---Look up a terminal by id.
 ---@param id string
----@return terminal_manager.TerminalRecord?
+---@return terminalia.TerminalRecord?
 function M.get(id)
     return state.terminals[id]
 end
 
 ---Return all known terminals sorted by id.
----@param filters? terminal_manager.ListFilters
----@return terminal_manager.TerminalRecord[]
+---@param filters? terminalia.ListFilters
+---@return terminalia.TerminalRecord[]
 function M.list(filters)
     local items = sorted_terminals()
 
@@ -162,7 +162,7 @@ end
 ---Update a terminal record in place.
 ---@param id string
 ---@param patch table<string, any>
----@return terminal_manager.TerminalRecord
+---@return terminalia.TerminalRecord
 function M.update(id, patch)
     local terminal = assert(state.terminals[id], string.format('Unknown terminal id: %s', id))
 
@@ -183,7 +183,7 @@ end
 ---Remove a terminal from the registry.
 ---@param id string
 ---@param opts? { wipe_buffer?: boolean, clear_history?: boolean }
----@return terminal_manager.TerminalRecord?
+---@return terminalia.TerminalRecord?
 function M.remove(id, opts)
     local terminal = state.terminals[id]
 
@@ -207,8 +207,8 @@ function M.remove(id, opts)
     return terminal
 end
 
----@param terminal terminal_manager.TerminalRecord
----@return terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
+---@return terminalia.TerminalRecord
 local function restore_with_fresh_id(terminal)
     local restored = vim.deepcopy(terminal)
     restored.id = alloc_id()

@@ -1,12 +1,12 @@
----@alias terminal_manager.TerminalStatus 'registered'|'running'|'exited'
----@alias terminal_manager.TerminalCommand string|string[]
+---@alias terminalia.TerminalStatus 'registered'|'running'|'exited'
+---@alias terminalia.TerminalCommand string|string[]
 
----@class terminal_manager.TerminalOutput
+---@class terminalia.TerminalOutput
 ---@field output string
----@field status terminal_manager.TerminalStatus
+---@field status terminalia.TerminalStatus
 ---@field exit_code? integer
 
----@class terminal_manager.CreateOptions
+---@class terminalia.CreateOptions
 ---@field id string
 ---@field name? string
 ---@field namespace? string
@@ -14,14 +14,14 @@
 ---@field disposable? boolean
 ---@field cwd? string
 ---@field env? table<string, string>
----@field status? terminal_manager.TerminalStatus
----@field command? terminal_manager.TerminalCommand
----@field view? terminal_manager.ViewKind
+---@field status? terminalia.TerminalStatus
+---@field command? terminalia.TerminalCommand
+---@field view? terminalia.ViewKind
 ---@field created_at? integer
 ---@field last_opened_at? integer
 ---@field exit_code? integer
 
----@class terminal_manager.PersistedTerminal
+---@class terminalia.PersistedTerminal
 ---@field id string
 ---@field name string
 ---@field namespace string
@@ -29,19 +29,19 @@
 ---@field disposable boolean
 ---@field cwd string
 ---@field env? table<string, string>
----@field status terminal_manager.TerminalStatus
----@field command? terminal_manager.TerminalCommand
----@field view terminal_manager.ViewKind
+---@field status terminalia.TerminalStatus
+---@field command? terminalia.TerminalCommand
+---@field view terminalia.ViewKind
 ---@field created_at integer
 ---@field last_opened_at? integer
 ---@field exit_code? integer
 
----@class terminal_manager.ListFilters
+---@class terminalia.ListFilters
 ---@field namespace? string
 ---@field cwd_prefix? string
 ---@field context_id? string
 
----@class terminal_manager.ContextCreateOptions
+---@class terminalia.ContextCreateOptions
 ---@field id? string
 ---@field kind? string
 ---@field label? string
@@ -49,7 +49,7 @@
 ---@field metadata? table<string, any>
 ---@field created_at? integer
 
----@class terminal_manager.PersistedContext
+---@class terminalia.PersistedContext
 ---@field id string
 ---@field kind string
 ---@field label string
@@ -57,7 +57,7 @@
 ---@field metadata? table<string, any>
 ---@field created_at integer
 
----@class terminal_manager.TerminalContext
+---@class terminalia.TerminalContext
 ---@field id string
 ---@field kind string
 ---@field label string
@@ -65,7 +65,7 @@
 ---@field metadata table<string, any>
 ---@field created_at integer
 
----@class terminal_manager.TerminalRecord
+---@class terminalia.TerminalRecord
 ---@field id string
 ---@field name string
 ---@field namespace string
@@ -73,16 +73,16 @@
 ---@field disposable boolean
 ---@field cwd string
 ---@field env? table<string, string>
----@field status terminal_manager.TerminalStatus
----@field command? terminal_manager.TerminalCommand
----@field preferred_view terminal_manager.ViewKind
+---@field status terminalia.TerminalStatus
+---@field command? terminalia.TerminalCommand
+---@field preferred_view terminalia.ViewKind
 ---@field bufnr? integer
 ---@field job_id? integer
 ---@field exit_code? integer
 ---@field created_at integer
 ---@field last_opened_at? integer
 
-local config = require('terminal_manager.config')
+local config = require('terminalia.config')
 
 local M = {}
 
@@ -126,7 +126,7 @@ function M.normalize_restored_id(id, fallback_index)
 end
 
 ---@param value any
----@return terminal_manager.TerminalStatus
+---@return terminalia.TerminalStatus
 local function normalize_status(value)
     if value == 'running' or value == 'exited' then
         return value
@@ -158,8 +158,8 @@ function M.normalize_env(env)
 end
 
 ---Create a normalized terminal record.
----@param opts terminal_manager.CreateOptions
----@return terminal_manager.TerminalRecord
+---@param opts terminalia.CreateOptions
+---@return terminalia.TerminalRecord
 function M.new_terminal(opts)
     M.assert_valid_id(opts.id)
 
@@ -185,8 +185,8 @@ function M.new_terminal(opts)
 end
 
 ---Restore a terminal record from persisted metadata.
----@param opts terminal_manager.CreateOptions
----@return terminal_manager.TerminalRecord
+---@param opts terminalia.CreateOptions
+---@return terminalia.TerminalRecord
 function M.restore_terminal(opts)
     assert(M.is_string_id(opts.id), string.format('Invalid terminal id: %s', vim.inspect(opts.id)))
 
@@ -209,8 +209,8 @@ function M.restore_terminal(opts)
 end
 
 ---Convert a terminal record into a persisted metadata table.
----@param terminal terminal_manager.TerminalRecord
----@return terminal_manager.PersistedTerminal
+---@param terminal terminalia.TerminalRecord
+---@return terminalia.PersistedTerminal
 function M.to_persisted_record(terminal)
     return {
         id = terminal.id,

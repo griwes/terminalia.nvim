@@ -1,7 +1,7 @@
-local config = require('terminal_manager.config')
-local history = require('terminal_manager.history')
-local registry = require('terminal_manager.registry')
-local uri = require('terminal_manager.uri')
+local config = require('terminalia.config')
+local history = require('terminalia.history')
+local registry = require('terminalia.terminal.registry')
+local uri = require('terminalia.uri')
 
 local M = {}
 local autocmds_registered = false
@@ -9,7 +9,7 @@ local autocmds_registered = false
 local captured_output = {}
 ---@type table<string, string>
 local pending_output = {}
----@type table<string, terminal_manager.TerminalRecord>
+---@type table<string, terminalia.TerminalRecord>
 local exited_disposables = {}
 ---@type table<string, boolean>
 local pending_disposable_cleanup = {}
@@ -19,22 +19,22 @@ local disposable_bufnrs = {}
 local buffer_state = {}
 local session_generation = 0
 
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@return string
 local function terminal_buffer_name(terminal)
     return uri.encode_terminal_uri(terminal)
 end
 
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@param bufnr integer
 ---@return string
 local function displaced_terminal_buffer_name(terminal, bufnr)
-    return string.format('terminal-manager-displaced://%s/%d', terminal.id, bufnr)
+    return string.format('terminalia-displaced://%s/%d', terminal.id, bufnr)
 end
 
 ---@param target_name string
 ---@param owner_bufnr integer
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 local function displace_conflicting_buffer(target_name, owner_bufnr, terminal)
     local existing = vim.fn.bufnr(target_name)
 
@@ -46,7 +46,7 @@ local function displace_conflicting_buffer(target_name, owner_bufnr, terminal)
 end
 
 ---@param bufnr integer
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 local function set_terminal_buffer_name(bufnr, terminal)
     local target_name = terminal_buffer_name(terminal)
     displace_conflicting_buffer(target_name, bufnr, terminal)
@@ -68,7 +68,7 @@ local function current_environment()
     return env
 end
 
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@return table<string, string>?
 local function resolve_environment(terminal)
     if terminal.env == nil then
@@ -134,13 +134,13 @@ function M.ensure_autocmds()
         return
     end
 
-    local group = vim.api.nvim_create_augroup('terminal-manager-runtime', {
+    local group = vim.api.nvim_create_augroup('terminalia-runtime', {
         clear = true,
     })
 
     vim.api.nvim_create_autocmd('TermRequest', {
         group = group,
-        desc = 'Update terminal-manager cwd metadata from OSC 7 requests',
+        desc = 'Update Terminalia cwd metadata from OSC 7 requests',
         callback = function(event)
             local terminal_id = vim.b[event.buf].terminal_manager_id
 
@@ -167,14 +167,14 @@ function M.ensure_autocmds()
     autocmds_registered = true
 end
 
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@return string|string[]
 local function resolve_command(terminal)
     return terminal.command or config.get().shell
 end
 
 ---@param id string
----@return terminal_manager.TerminalRecord?
+---@return terminalia.TerminalRecord?
 local function current_terminal(id)
     return registry.get(id) or exited_disposables[id]
 end
@@ -191,7 +191,7 @@ local function create_runtime_buffer(listed)
     return bufnr
 end
 
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@return integer
 local function ensure_buffer(terminal)
     if terminal.bufnr and vim.api.nvim_buf_is_valid(terminal.bufnr) then
@@ -229,7 +229,7 @@ local function capture_named_marks(bufnr)
     return marks
 end
 
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 local function capture_buffer_state(terminal)
     local bufnr = terminal.bufnr
 
@@ -243,7 +243,7 @@ local function capture_buffer_state(terminal)
     }
 end
 
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@return integer, fun(): integer
 local function prepare_restarted_terminal_buffer(terminal)
     capture_buffer_state(terminal)
@@ -279,7 +279,7 @@ local function prepare_restarted_terminal_buffer(terminal)
     return replacement_bufnr, commit
 end
 
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@param bufnr integer
 local function restore_buffer_state(terminal, bufnr)
     local state = buffer_state[terminal.id]
@@ -412,8 +412,8 @@ local function with_hidden_terminal_window(bufnr, callback)
 end
 
 ---Start the native terminal job if it is not already running.
----@param terminal terminal_manager.TerminalRecord
----@return terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
+---@return terminalia.TerminalRecord
 function M.ensure_started(terminal)
     local current = assert(registry.get(terminal.id), string.format('Unknown terminal id: %s', terminal.id))
 
@@ -640,9 +640,9 @@ local function detach_buffer_from_windows(bufnr)
 end
 
 ---Write stdin data into a running terminal job, starting it first if needed.
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@param data string
----@return terminal_manager.TerminalRecord
+---@return terminalia.TerminalRecord
 function M.send(terminal, data)
     local current = M.ensure_started(terminal)
 
@@ -653,9 +653,9 @@ function M.send(terminal, data)
 end
 
 ---Wait for a running terminal job to exit.
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@param timeout_ms? integer
----@return terminal_manager.TerminalRecord?
+---@return terminalia.TerminalRecord?
 function M.wait_for_exit(terminal, timeout_ms)
     local current = registry.get(terminal.id)
 
@@ -722,8 +722,8 @@ function M.wait_for_exit(terminal, timeout_ms)
 end
 
 ---Request termination of a running terminal job.
----@param terminal terminal_manager.TerminalRecord
----@return terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
+---@return terminalia.TerminalRecord
 function M.kill(terminal)
     local current = assert(registry.get(terminal.id), string.format('Unknown terminal id: %s', terminal.id))
 
@@ -745,7 +745,7 @@ function M.output(id)
 end
 
 ---@param id string
----@return terminal_manager.TerminalRecord?
+---@return terminalia.TerminalRecord?
 function M.exited_terminal(id)
     return current_terminal(id)
 end
@@ -758,7 +758,7 @@ function M.forget_exited_terminal(id)
 end
 
 ---@param id string
----@return terminal_manager.TerminalRecord?
+---@return terminalia.TerminalRecord?
 function M.release_exited_terminal(id)
     local released = current_terminal(id)
 

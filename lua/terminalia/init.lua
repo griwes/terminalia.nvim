@@ -1,12 +1,12 @@
-local config = require('terminal_manager.config')
-local api = require('terminal_manager.api')
-local commands = require('terminal_manager.commands')
-local contexts = require('terminal_manager.contexts')
-local persistence = require('terminal_manager.persistence')
-local runtime = require('terminal_manager.runtime.native')
+local config = require('terminalia.config')
+local api = require('terminalia.api')
+local commands = require('terminalia.commands')
+local contexts = require('terminalia.context.state')
+local persistence = require('terminalia.persistence')
+local runtime = require('terminalia.runtime.native')
 
----@class terminal_manager.RootModule
----@field config terminal_manager.Config
+---@class terminalia.RootModule
+---@field config terminalia.Config
 ---@field api table
 
 local M = {}
@@ -17,7 +17,7 @@ function M._reset_setup_state()
     last_persistence_config = nil
 end
 
----@param cfg terminal_manager.Config
+---@param cfg terminalia.Config
 ---@return table
 local function persistence_config_snapshot(cfg)
     return {
@@ -65,9 +65,9 @@ M.api = api
 contexts.clear()
 commands.ensure(M)
 
----Configure terminal-manager.
----@param opts? Partial<terminal_manager.Config>
----@return terminal_manager.Config
+---Configure Terminalia.
+---@param opts? Partial<terminalia.Config>
+---@return terminalia.Config
 function M.setup(opts)
     local active_config = config.get()
     local next_config = config.preview(opts, active_config)
@@ -110,14 +110,16 @@ function M.setup(opts)
         merge = merge_restore,
     })
 
-    local ok, session_plugin = pcall(require, 'session')
+    local ok, session_plugin = pcall(require, 'continuity')
 
     if ok and type(session_plugin) == 'table' and type(session_plugin.api) == 'table' then
         if type(session_plugin.api.register_contributor) == 'function' then
-            session_plugin.api.register_contributor('terminal_manager', {
+            session_plugin.api.register_contributor('terminalia', {
                 capture = api.session_capture,
                 plan_restore = api.session_plan_restore,
-                restore_after = { 'git_worktree', 'remote_workspace', 'devcontainer' },
+                restore = api.session_restore,
+                restore_phase = 'after_mksession',
+                restore_after = { 'arboretum', 'consulate', 'laboratory' },
             })
         end
     end

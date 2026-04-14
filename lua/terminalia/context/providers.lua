@@ -1,4 +1,4 @@
-local contexts = require('terminal_manager.contexts')
+local contexts = require('terminalia.context.state')
 
 local M = {}
 
@@ -27,7 +27,7 @@ end
 local function register_host_provider()
     providers.host = {
         plan_command = function(context, command, opts)
-            local cfg = require('terminal_manager.config').get()
+            local cfg = require('terminalia.config').get()
 
             return {
                 context = context,
@@ -49,7 +49,7 @@ function M.reset()
 end
 
 ---@param kind string
----@param provider { plan_command: fun(context: terminal_manager.TerminalContext, command: string|string[], opts?: table): table }
+---@param provider { plan_command: fun(context: terminalia.TerminalContext, command: string|string[], opts?: table): table }
 function M.register(kind, provider)
     assert(type(kind) == 'string' and kind ~= '', 'Context provider kind must be a non-empty string')
     assert(
@@ -67,7 +67,7 @@ function M.get(kind)
     return providers[kind]
 end
 
----@param context terminal_manager.TerminalContext
+---@param context terminalia.TerminalContext
 ---@param command string|string[]
 ---@param opts? table
 ---@return table
@@ -79,9 +79,9 @@ function M.plan_command(context, command, opts)
     return provider.plan_command(context, command, opts)
 end
 
----@param context_spec terminal_manager.TerminalContext
----@param parent_context terminal_manager.TerminalContext
----@return terminal_manager.TerminalContext
+---@param context_spec terminalia.TerminalContext
+---@param parent_context terminalia.TerminalContext
+---@return terminalia.TerminalContext
 function M.restore_context(context_spec, parent_context)
     if context_spec.kind == 'host' or context_spec.id == contexts.host().id then
         return contexts.host()
@@ -111,8 +111,8 @@ function M.restore_context(context_spec, parent_context)
     })
 end
 
----@param stack terminal_manager.TerminalContext[]
----@return terminal_manager.TerminalContext
+---@param stack terminalia.TerminalContext[]
+---@return terminalia.TerminalContext
 function M.restore_context_stack(stack)
     local current = contexts.host()
 

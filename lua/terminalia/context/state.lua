@@ -9,7 +9,7 @@ local state = {
     contexts = {},
 }
 
----@return terminal_manager.TerminalContext
+---@return terminalia.TerminalContext
 local function default_host_context()
     return {
         id = HOST_CONTEXT_ID,
@@ -20,7 +20,7 @@ local function default_host_context()
     }
 end
 
----@return terminal_manager.TerminalContext
+---@return terminalia.TerminalContext
 local function ensure_host_context()
     local context = state.contexts[HOST_CONTEXT_ID]
 
@@ -59,8 +59,8 @@ local function normalize_metadata(metadata)
     return vim.deepcopy(metadata)
 end
 
----@param left terminal_manager.TerminalContext
----@param right terminal_manager.TerminalContext
+---@param left terminalia.TerminalContext
+---@param right terminalia.TerminalContext
 ---@return boolean
 local function sort_by_id(left, right)
     if left.id == HOST_CONTEXT_ID then
@@ -74,8 +74,8 @@ local function sort_by_id(left, right)
     return left.id < right.id
 end
 
----@param context terminal_manager.PersistedContext
----@return terminal_manager.TerminalContext
+---@param context terminalia.PersistedContext
+---@return terminalia.TerminalContext
 local function restore_context(context)
     return {
         id = context.id,
@@ -88,8 +88,8 @@ local function restore_context(context)
 end
 
 ---Create a new terminal context.
----@param opts terminal_manager.ContextCreateOptions
----@return terminal_manager.TerminalContext
+---@param opts terminalia.ContextCreateOptions
+---@return terminalia.TerminalContext
 function M.create(opts)
     opts = opts or {}
 
@@ -122,8 +122,8 @@ end
 
 ---Create a child terminal context.
 ---@param parent_id string
----@param opts? terminal_manager.ContextCreateOptions
----@return terminal_manager.TerminalContext
+---@param opts? terminalia.ContextCreateOptions
+---@return terminalia.TerminalContext
 function M.create_child(parent_id, opts)
     opts = opts or {}
     return M.create(vim.tbl_extend('force', opts, {
@@ -133,25 +133,25 @@ end
 
 ---Return a terminal context by id.
 ---@param id string
----@return terminal_manager.TerminalContext?
+---@return terminalia.TerminalContext?
 function M.get(id)
     ensure_host_context()
     return state.contexts[id]
 end
 
 ---Return all known terminal contexts.
----@return terminal_manager.TerminalContext[]
+---@return terminalia.TerminalContext[]
 function M.list()
     ensure_host_context()
 
-    ---@type terminal_manager.TerminalContext[]
+    ---@type terminalia.TerminalContext[]
     local items = vim.tbl_values(state.contexts)
     table.sort(items, sort_by_id)
     return vim.tbl_map(vim.deepcopy, items)
 end
 
 ---Return the current terminal context.
----@return terminal_manager.TerminalContext
+---@return terminalia.TerminalContext
 function M.current()
     ensure_host_context()
     return vim.deepcopy(assert(state.contexts[state.current_context_id]))
@@ -159,7 +159,7 @@ end
 
 ---Set the current terminal context.
 ---@param id string
----@return terminal_manager.TerminalContext
+---@return terminalia.TerminalContext
 function M.set_current(id)
     ensure_host_context()
 
@@ -172,7 +172,7 @@ function M.set_current(id)
 end
 
 ---Reset the current terminal context back to the host context.
----@return terminal_manager.TerminalContext
+---@return terminalia.TerminalContext
 function M.clear_current()
     ensure_host_context()
     state.current_context_id = HOST_CONTEXT_ID
@@ -180,7 +180,7 @@ function M.clear_current()
 end
 
 ---Return the host/root terminal context.
----@return terminal_manager.TerminalContext
+---@return terminalia.TerminalContext
 function M.host()
     return vim.deepcopy(ensure_host_context())
 end
@@ -201,7 +201,7 @@ local function compute_next_id()
 end
 
 ---Return a persistence snapshot for context state.
----@return { next_context_id: integer, current_context_id: string, contexts: terminal_manager.PersistedContext[] }
+---@return { next_context_id: integer, current_context_id: string, contexts: terminalia.PersistedContext[] }
 function M.snapshot()
     ensure_host_context()
 
@@ -226,7 +226,7 @@ function M.snapshot()
 end
 
 ---Restore context state from a persistence payload.
----@param payload? { next_context_id?: integer, current_context_id?: string, contexts?: terminal_manager.PersistedContext[] }
+---@param payload? { next_context_id?: integer, current_context_id?: string, contexts?: terminalia.PersistedContext[] }
 function M.restore_payload(payload)
     state.next_id = 1
     state.current_context_id = HOST_CONTEXT_ID

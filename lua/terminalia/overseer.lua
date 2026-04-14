@@ -1,6 +1,6 @@
-local config = require('terminal_manager.config')
-local contexts = require('terminal_manager.contexts')
-local context_providers = require('terminal_manager.context_providers')
+local config = require('terminalia.config')
+local contexts = require('terminalia.context.state')
+local context_providers = require('terminalia.context.providers')
 
 local M = {}
 
@@ -26,7 +26,7 @@ local function display_command(command)
 end
 
 ---@param context_id? string
----@return terminal_manager.TerminalContext
+---@return terminalia.TerminalContext
 function M.resolve_context(context_id)
     if type(context_id) == 'string' and context_id ~= '' then
         return assert(contexts.get(context_id), string.format('Unknown terminal context id: %s', context_id))
@@ -41,7 +41,7 @@ function M.resolve_context(context_id)
     return contexts.current()
 end
 
----@param context terminal_manager.TerminalContext
+---@param context terminalia.TerminalContext
 ---@param command string|string[]
 ---@param opts? table
 ---@return table
@@ -58,7 +58,7 @@ end
 local function build_metadata(metadata, plan)
     local merged = plan.metadata and vim.deepcopy(plan.metadata) or {}
 
-    merged.terminal_manager = vim.tbl_deep_extend('force', merged.terminal_manager or {}, {
+    merged.terminalia = vim.tbl_deep_extend('force', merged.terminalia or {}, {
         context_id = plan.context.id,
         context_kind = plan.context.kind,
         context_label = plan.context.label,
@@ -139,13 +139,11 @@ function M.register_template(template)
             if template.build ~= nil then
                 build = template.build(params)
                 if build == nil or build.command == nil then
-                    error(string.format('TerminalManager Overseer template %s returned no command', template.name))
+                    error(string.format('Terminalia Overseer template %s returned no command', template.name))
                 end
             else
                 if template.command == nil then
-                    error(
-                        string.format('TerminalManager Overseer template %s requires command or build', template.name)
-                    )
+                    error(string.format('Terminalia Overseer template %s requires command or build', template.name))
                 end
                 build = {
                     command = template.command,

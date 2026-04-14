@@ -1,8 +1,8 @@
-local overseer_helper = require('terminal_manager.overseer')
+local overseer_helper = require('terminalia.overseer')
 
 local M = {}
 
----@class terminal_manager.OverseerStrategyOptions
+---@class terminalia.OverseerStrategyOptions
 ---@field context_id? string
 ---@field context_id_resolver? fun(task: overseer.Task): string?
 ---@field preserve_output? boolean
@@ -17,9 +17,9 @@ local M = {}
 ---@field view? string
 ---@field metadata? table<string, any>
 
----@class terminal_manager.OverseerStrategy
+---@class terminalia.OverseerStrategy
 ---@field delegate overseer.Strategy
----@field opts terminal_manager.OverseerStrategyOptions
+---@field opts terminalia.OverseerStrategyOptions
 local Strategy = {}
 
 ---@return table
@@ -28,7 +28,7 @@ local function load_jobstart_strategy()
 end
 
 ---@param task overseer.Task
----@param opts terminal_manager.OverseerStrategyOptions
+---@param opts terminalia.OverseerStrategyOptions
 ---@return table<string, any>
 local function build_task_definition(task, opts)
     local context_id = opts.context_id_resolver and opts.context_id_resolver(task) or opts.context_id
@@ -70,7 +70,7 @@ local function proxy_task(task, definition)
     return proxy
 end
 
----@param opts? terminal_manager.OverseerStrategyOptions
+---@param opts? terminalia.OverseerStrategyOptions
 ---@return overseer.Strategy
 function M.new(opts)
     local normalized = vim.deepcopy(opts or {})

@@ -1,13 +1,13 @@
----@alias terminal_manager.ViewKind 'split'|'float'
+---@alias terminalia.ViewKind 'split'|'float'
 
----@class terminal_manager.FloatConfig
+---@class terminalia.FloatConfig
 ---@field width number
 ---@field height number
 ---@field border string
 
----@class terminal_manager.Config
+---@class terminalia.Config
 ---@field default_namespace string
----@field default_view terminal_manager.ViewKind
+---@field default_view terminalia.ViewKind
 ---@field overseer_context_id? string
 ---@field overseer_terminal_namespace string
 ---@field persist_terminals boolean
@@ -17,7 +17,7 @@
 ---@field shell string|string[]
 ---@field split_direction string
 ---@field split_size integer
----@field float terminal_manager.FloatConfig
+---@field float terminalia.FloatConfig
 ---@field notify_on_exit boolean
 
 local M = {}
@@ -35,7 +35,7 @@ local valid_split_directions = {
     vertical = true,
 }
 
----@type terminal_manager.Config
+---@type terminalia.Config
 local defaults = {
     default_namespace = 'default',
     default_view = 'split',
@@ -43,8 +43,8 @@ local defaults = {
     overseer_terminal_namespace = 'overseer',
     persist_terminals = true,
     persist_history = true,
-    state_file = vim.fs.joinpath(vim.fn.stdpath('state'), 'terminal-manager.nvim', 'terminals.json'),
-    history_dir = vim.fs.joinpath(vim.fn.stdpath('state'), 'terminal-manager.nvim', 'history'),
+    state_file = vim.fs.joinpath(vim.fn.stdpath('state'), 'terminalia.nvim', 'terminals.json'),
+    history_dir = vim.fs.joinpath(vim.fn.stdpath('state'), 'terminalia.nvim', 'history'),
     shell = vim.o.shell,
     split_direction = 'botright',
     split_size = 12,
@@ -56,13 +56,13 @@ local defaults = {
     notify_on_exit = true,
 }
 
----@type terminal_manager.Config
+---@type terminalia.Config
 local current = vim.deepcopy(defaults)
 
 ---Normalize a user configuration table.
----@param user_opts? Partial<terminal_manager.Config>
----@param base_opts? terminal_manager.Config
----@return terminal_manager.Config
+---@param user_opts? Partial<terminalia.Config>
+---@param base_opts? terminalia.Config
+---@return terminalia.Config
 function M.normalize(user_opts, base_opts)
     local normalized = vim.tbl_deep_extend('force', vim.deepcopy(base_opts or defaults), user_opts or {})
 
@@ -75,15 +75,15 @@ function M.normalize(user_opts, base_opts)
 end
 
 ---Preview a configuration merged onto a base config.
----@param user_opts? Partial<terminal_manager.Config>|terminal_manager.Config
----@param base_opts? terminal_manager.Config
----@return terminal_manager.Config
+---@param user_opts? Partial<terminalia.Config>|terminalia.Config
+---@param base_opts? terminalia.Config
+---@return terminalia.Config
 function M.preview(user_opts, base_opts)
     return M.normalize(user_opts, base_opts or current)
 end
 
 ---@param view? string
----@return terminal_manager.ViewKind
+---@return terminalia.ViewKind
 function M.normalize_view(view)
     if valid_views[view] then
         return view
@@ -105,8 +105,8 @@ function M.normalize_split_direction(direction)
 end
 
 ---Set the active configuration.
----@param user_opts? Partial<terminal_manager.Config>
----@return terminal_manager.Config
+---@param user_opts? Partial<terminalia.Config>
+---@return terminalia.Config
 function M.set(user_opts)
     local next_config = M.preview(user_opts, user_opts and current or defaults)
 
@@ -122,20 +122,20 @@ function M.set(user_opts)
 end
 
 ---@param context_id? string
----@return terminal_manager.Config
+---@return terminalia.Config
 function M.set_overseer_context(context_id)
     current.overseer_context_id = context_id
     return current
 end
 
----@return terminal_manager.Config
+---@return terminalia.Config
 function M.clear_overseer_context()
     current.overseer_context_id = nil
     return current
 end
 
 ---Get the active configuration.
----@return terminal_manager.Config
+---@return terminalia.Config
 function M.get()
     return current
 end

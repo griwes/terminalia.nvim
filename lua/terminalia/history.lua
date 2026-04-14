@@ -1,4 +1,4 @@
-local config = require('terminal_manager.config')
+local config = require('terminalia.config')
 
 local M = {}
 

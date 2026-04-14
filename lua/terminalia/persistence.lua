@@ -1,20 +1,20 @@
-local model = require('terminal_manager.model')
+local model = require('terminalia.terminal.model')
 
 local M = {}
 
----@class terminal_manager.PersistencePayload
+---@class terminalia.PersistencePayload
 ---@field next_id integer
----@field terminals terminal_manager.TerminalRecord[]
+---@field terminals terminalia.TerminalRecord[]
 ---@field next_context_id integer
 ---@field current_context_id string
----@field contexts terminal_manager.PersistedContext[]
+---@field contexts terminalia.PersistedContext[]
 
 ---@return string
 local function state_file()
-    return require('terminal_manager.config').get().state_file
+    return require('terminalia.config').get().state_file
 end
 
----@return terminal_manager.PersistencePayload
+---@return terminalia.PersistencePayload
 local function empty_payload()
     return {
         next_id = 1,
@@ -31,7 +31,7 @@ local function state_dir()
 end
 
 ---Load persisted terminal metadata from disk.
----@return terminal_manager.PersistencePayload
+---@return terminalia.PersistencePayload
 function M.load()
     local path = state_file()
 
@@ -67,7 +67,7 @@ function M.load()
 end
 
 ---Persist terminal metadata to disk.
----@param payload terminal_manager.PersistencePayload
+---@param payload terminalia.PersistencePayload
 function M.save(payload)
     local path = state_file()
 

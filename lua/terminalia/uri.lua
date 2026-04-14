@@ -1,8 +1,8 @@
-local contexts = require('terminal_manager.contexts')
+local contexts = require('terminalia.context.state')
 
 local M = {}
 
-local SCHEME = 'terminal-manager://'
+local SCHEME = 'terminalia://'
 
 ---@param value string
 ---@return string
@@ -50,7 +50,7 @@ local function metadata_pairs(metadata)
 end
 
 ---@param context_id string
----@return terminal_manager.TerminalContext[]
+---@return terminalia.TerminalContext[]
 local function context_stack(context_id)
     local stack = {}
     local seen = {}
@@ -78,7 +78,7 @@ local function context_stack(context_id)
 end
 
 ---@param kind 'terminal'|'history'
----@param terminal terminal_manager.TerminalRecord|{ id: string, name: string, context_id?: string }
+---@param terminal terminalia.TerminalRecord|{ id: string, name: string, context_id?: string }
 ---@return string
 local function encode_uri(kind, terminal)
     local context_id = terminal.context_id or 'context:host'
@@ -105,13 +105,13 @@ local function encode_uri(kind, terminal)
     return SCHEME .. table.concat(segments, '/')
 end
 
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 ---@return string
 function M.encode_terminal_uri(terminal)
     return encode_uri('terminal', terminal)
 end
 
----@param terminal terminal_manager.TerminalRecord|{ id: string, name: string, context_id?: string }
+---@param terminal terminalia.TerminalRecord|{ id: string, name: string, context_id?: string }
 ---@return string
 function M.encode_history_uri(terminal)
     return encode_uri('history', terminal)
@@ -124,7 +124,7 @@ local function decode_legacy_context_stack(segments, terminal_marker)
     local context_segments = terminal_marker - 3
 
     if context_segments < 0 or context_segments % 3 ~= 0 then
-        error('Malformed terminal-manager URI contexts')
+        error('Malformed Terminalia URI contexts')
     end
 
     local stack = {}
@@ -163,7 +163,7 @@ local function decode_context_stack(segments)
         end
 
         if legacy_terminal_marker == nil or legacy_terminal_marker + 2 ~= #segments then
-            return nil, nil, nil, 'Malformed terminal-manager URI path'
+            return nil, nil, nil, 'Malformed Terminalia URI path'
         end
 
         local ok, legacy_stack, legacy_ids = pcall(decode_legacy_context_stack, segments, legacy_terminal_marker)
@@ -181,7 +181,7 @@ local function decode_context_stack(segments)
         end
 
         if segments[index] ~= 'context' or index + 3 > #segments then
-            return nil, nil, nil, 'Malformed terminal-manager URI path'
+            return nil, nil, nil, 'Malformed Terminalia URI path'
         end
 
         local context = {
@@ -195,7 +195,7 @@ local function decode_context_stack(segments)
 
         while index <= #segments and segments[index] == 'meta' do
             if index + 2 > #segments then
-                return nil, nil, nil, 'Malformed terminal-manager URI metadata'
+                return nil, nil, nil, 'Malformed Terminalia URI metadata'
             end
 
             context.metadata[decode_component(segments[index + 1])] = decode_component(segments[index + 2])
@@ -206,31 +206,31 @@ local function decode_context_stack(segments)
         table.insert(stack_ids, context.id)
     end
 
-    return nil, nil, nil, 'Malformed terminal-manager URI path'
+    return nil, nil, nil, 'Malformed Terminalia URI path'
 end
 
 ---@param uri_value string
 ---@return { kind: string, terminal_id: string, name: string, context_id?: string, context_stack: { kind: string, label: string, id: string, metadata: table<string, string> }[], context_stack_ids: string[] }?, string?
 function M.decode(uri_value)
     if type(uri_value) ~= 'string' or not vim.startswith(uri_value, SCHEME) then
-        return nil, 'Unsupported terminal-manager URI'
+        return nil, 'Unsupported Terminalia URI'
     end
 
     local body = uri_value:sub(#SCHEME + 1)
     local segments = vim.split(body, '/', { plain = true, trimempty = true })
 
     if #segments < 5 then
-        return nil, 'Malformed terminal-manager URI'
+        return nil, 'Malformed Terminalia URI'
     end
 
     local kind = segments[1]
 
     if kind ~= 'terminal' and kind ~= 'history' then
-        return nil, string.format('Unsupported terminal-manager URI kind: %s', kind)
+        return nil, string.format('Unsupported Terminalia URI kind: %s', kind)
     end
 
     if segments[2] ~= 'contexts' then
-        return nil, 'Malformed terminal-manager URI path'
+        return nil, 'Malformed Terminalia URI path'
     end
 
     local terminal_marker, stack, stack_ids, err = decode_context_stack(segments)
@@ -240,7 +240,7 @@ function M.decode(uri_value)
     end
 
     if terminal_marker + 2 ~= #segments then
-        return nil, 'Malformed terminal-manager URI path'
+        return nil, 'Malformed Terminalia URI path'
     end
 
     return {

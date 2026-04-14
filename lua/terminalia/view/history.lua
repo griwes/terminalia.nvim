@@ -1,10 +1,10 @@
 local M = {}
-local config = require('terminal_manager.config')
-local uri = require('terminal_manager.uri')
+local config = require('terminalia.config')
+local uri = require('terminalia.uri')
 
----@param terminal terminal_manager.TerminalRecord?
+---@param terminal terminalia.TerminalRecord?
 ---@param lines string[]
----@param cfg terminal_manager.Config
+---@param cfg terminalia.Config
 ---@return integer
 function M.open(terminal, lines, cfg)
     local direction = config.normalize_split_direction(cfg.split_direction)

@@ -1,4 +1,4 @@
-# terminal-manager.nvim
+# Terminalia
 
 Native-feeling terminal objects for Neovim.
 
@@ -14,9 +14,9 @@ The current slice is intentionally small but usable:
 - capture durable terminal history and open it in a separate scratch view
 - expose a programmatic start/send/output/wait/kill/release control surface for downstream plugins
 - expose concrete `TerminalContext` records plus current-context tracking for downstream terminal providers
-- use one canonical `terminal-manager://...` URI family for live terminal buffers and terminal-history buffers
+- use one canonical `terminalia://...` URI family for live terminal buffers and terminal-history buffers
 - reopen terminal/history URIs through registered context providers even when the encoded context stack is missing in memory
-- contribute canonical terminal-URI reopen steps to `session.nvim` restore plans
+- contribute canonical terminal-URI reopen steps to `continuity.nvim` restore plans
 - restart exited terminals in place while preserving named lowercase marks
 - auto-prune disposable terminals after exit
 - list registered terminals with cwd metadata
@@ -29,8 +29,8 @@ Example local `lazy.nvim` spec:
 
 ```lua
 {
-    dir = vim.fn.expand('~/projects/neovim-plugin-orchestration/terminal-manager.nvim'),
-    name = 'terminal-manager.nvim',
+    dir = vim.fn.expand('~/projects/neovim-plugin-orchestration/terminalia.nvim'),
+    name = 'terminalia.nvim',
     opts = {
         default_view = 'split',
     },
@@ -39,79 +39,79 @@ Example local `lazy.nvim` spec:
 
 ## Commands
 
-- `:TerminalManagerNew [name] [namespace] [view]`
-- `:TerminalManagerOpen <id> [view]`
-- `:TerminalManagerList [namespace] [cwd_prefix]`
-- `:TerminalManagerHistory <id>`
-- `:TerminalManagerOpenUri <uri> [view]`
-- `:TerminalManagerOverseerCurrent`
-- `:TerminalManagerOverseerUse <context_id>`
-- `:TerminalManagerOverseerClear`
+- `:TerminaliaNew [name] [namespace] [view]`
+- `:TerminaliaOpen <id> [view]`
+- `:TerminaliaList [namespace] [cwd_prefix]`
+- `:TerminaliaHistory <id>`
+- `:TerminaliaOpenUri <uri> [view]`
+- `:TerminaliaOverseerCurrent`
+- `:TerminaliaOverseerUse <context_id>`
+- `:TerminaliaOverseerClear`
 
 Examples:
 
-- `:TerminalManagerNew build workspace split`
-- `:TerminalManagerNew scratch default float`
-- `:TerminalManagerOpen terminal:1 float`
-- `:TerminalManagerList workspace /tmp/workspace`
-- `:TerminalManagerHistory terminal:1`
+- `:TerminaliaNew build workspace split`
+- `:TerminaliaNew scratch default float`
+- `:TerminaliaOpen terminal:1 float`
+- `:TerminaliaList workspace /tmp/workspace`
+- `:TerminaliaHistory terminal:1`
 
 ## Lua API
 
 ```lua
-local terminal_manager = require('terminal_manager')
+local terminalia = require('terminalia')
 
-terminal_manager.setup({
+terminalia.setup({
     default_view = 'float',
     persist_terminals = true,
 })
 
-local remote = terminal_manager.api.create_child_context(terminal_manager.api.host_context().id, {
+local remote = terminalia.api.create_child_context(terminalia.api.host_context().id, {
     kind = 'remote_workspace',
     label = 'devbox',
 })
 
-terminal_manager.api.set_current_context(remote.id)
+terminalia.api.set_current_context(remote.id)
 
-local terminal = terminal_manager.api.create({
+local terminal = terminalia.api.create({
     name = 'build',
     namespace = 'workspace',
 })
 
-terminal_manager.api.start(terminal.id)
-print(vim.inspect(terminal_manager.api.output(terminal.id)))
-terminal_manager.api.open(terminal.id, { view = 'split' })
-terminal_manager.api.list({
+terminalia.api.start(terminal.id)
+print(vim.inspect(terminalia.api.output(terminal.id)))
+terminalia.api.open(terminal.id, { view = 'split' })
+terminalia.api.list({
     namespace = 'workspace',
     cwd_prefix = vim.fn.getcwd(),
 })
-terminal_manager.api.open_history(terminal.id)
+terminalia.api.open_history(terminal.id)
 ```
 
 Additional control helpers:
 
-- `terminal_manager.api.create_context(opts)`
-- `terminal_manager.api.create_child_context(parent_id, opts)`
-- `terminal_manager.api.host_context()`
-- `terminal_manager.api.current_context()`
-- `terminal_manager.api.set_current_context(id)`
-- `terminal_manager.api.clear_current_context()`
-- `terminal_manager.api.register_context_provider(kind, provider)`
-- `terminal_manager.api.overseer_context([context_id])`
-- `terminal_manager.api.set_overseer_context(id)`
-- `terminal_manager.api.clear_overseer_context()`
-- `terminal_manager.api.build_overseer_task(command, opts)`
-- `terminal_manager.api.new_overseer_task(command, opts)`
-- `terminal_manager.api.run_overseer_task(command, opts)`
-- `terminal_manager.api.register_overseer_template(template)`
-- `terminal_manager.api.decode_uri(uri)`
-- `terminal_manager.api.open_uri(uri, opts)`
-- `terminal_manager.api.start(id)`
-- `terminal_manager.api.send(id, data)`
-- `terminal_manager.api.output(id)`
-- `terminal_manager.api.wait(id, timeout_ms)`
-- `terminal_manager.api.kill(id)`
-- `terminal_manager.api.release(id)`
+- `terminalia.api.create_context(opts)`
+- `terminalia.api.create_child_context(parent_id, opts)`
+- `terminalia.api.host_context()`
+- `terminalia.api.current_context()`
+- `terminalia.api.set_current_context(id)`
+- `terminalia.api.clear_current_context()`
+- `terminalia.api.register_context_provider(kind, provider)`
+- `terminalia.api.overseer_context([context_id])`
+- `terminalia.api.set_overseer_context(id)`
+- `terminalia.api.clear_overseer_context()`
+- `terminalia.api.build_overseer_task(command, opts)`
+- `terminalia.api.new_overseer_task(command, opts)`
+- `terminalia.api.run_overseer_task(command, opts)`
+- `terminalia.api.register_overseer_template(template)`
+- `terminalia.api.decode_uri(uri)`
+- `terminalia.api.open_uri(uri, opts)`
+- `terminalia.api.start(id)`
+- `terminalia.api.send(id, data)`
+- `terminalia.api.output(id)`
+- `terminalia.api.wait(id, timeout_ms)`
+- `terminalia.api.kill(id)`
+- `terminalia.api.release(id)`
 
 ## Development
 

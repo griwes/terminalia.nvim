@@ -1,3 +1,5 @@
+local api = require('terminalia.api')
+
 local M = {}
 
 local registered = false
@@ -267,14 +269,14 @@ local function view_completions(arglead)
 end
 
 ---@param verb string
----@param terminal terminal_manager.TerminalRecord
+---@param terminal terminalia.TerminalRecord
 local function notify_terminal(verb, terminal)
     vim.notify(string.format('%s %s (%s)', verb, terminal.id, terminal.name))
 end
 
 ---Register the plugin's user commands once.
----@param terminal_manager terminal_manager.RootModule
-function M.ensure(terminal_manager)
+---@param terminalia terminalia.RootModule
+function M.ensure(terminalia)
     if registered then
         return
     end
@@ -282,7 +284,7 @@ function M.ensure(terminal_manager)
     local function new_terminal_command(command_opts)
         local args = parse_command_args(command_opts)
 
-        local terminal = terminal_manager.api.create_and_open({
+        local terminal = api.create_and_open({
             name = args[1],
             namespace = args[2],
             view = args[3],
@@ -295,10 +297,10 @@ function M.ensure(terminal_manager)
         local args = parse_command_args(command_opts)
 
         if #args == 0 then
-            error('TerminalManagerOpen requires a terminal id')
+            error('TerminaliaOpen requires a terminal id')
         end
 
-        local terminal = terminal_manager.api.open(args[1], {
+        local terminal = api.open(args[1], {
             view = args[2],
         })
 
@@ -308,7 +310,7 @@ function M.ensure(terminal_manager)
     local function list_terminals_command(command_opts)
         local args = parse_command_args(command_opts)
         local namespace, namespace_argc = parsed_namespace_filter_from_args(args)
-        local lines = terminal_manager.api.list_lines({
+        local lines = api.list_lines({
             namespace = namespace,
             cwd_prefix = args[namespace_argc + 1],
         })
@@ -330,32 +332,32 @@ function M.ensure(terminal_manager)
         local args = parse_command_args(command_opts)
 
         if #args == 0 then
-            error('TerminalManagerHistory requires a terminal id')
+            error('TerminaliaHistory requires a terminal id')
         end
 
-        terminal_manager.api.open_history(args[1])
+        api.open_history(args[1])
     end
 
     local function open_uri_command(command_opts)
         local args = parse_command_args(command_opts)
 
         if #args == 0 then
-            error('TerminalManagerOpenUri requires a terminal-manager URI')
+            error('TerminaliaOpenUri requires a Terminalia URI')
         end
 
-        terminal_manager.api.open_uri(args[1], {
+        api.open_uri(args[1], {
             view = args[2],
         })
     end
 
-    vim.api.nvim_create_user_command('TerminalManagerNew', new_terminal_command, {
+    vim.api.nvim_create_user_command('TerminaliaNew', new_terminal_command, {
         nargs = '*',
         desc = 'Create and reveal a terminal: [name] [namespace] [view]',
         complete = function(arglead, cmdline)
             local argc = completion_arg_count(cmdline)
 
             if argc == 2 then
-                return namespace_completions(arglead, terminal_manager.api)
+                return namespace_completions(arglead, api)
             end
 
             if argc == 3 then
@@ -366,14 +368,14 @@ function M.ensure(terminal_manager)
         end,
     })
 
-    vim.api.nvim_create_user_command('TerminalManagerOpen', open_terminal_command, {
+    vim.api.nvim_create_user_command('TerminaliaOpen', open_terminal_command, {
         nargs = '+',
         desc = 'Reveal an existing terminal: <id> [view]',
         complete = function(arglead, cmdline)
             local argc = completion_arg_count(cmdline)
 
             if argc == 1 then
-                return terminal_id_completions(arglead, terminal_manager.api)
+                return terminal_id_completions(arglead, api)
             end
 
             if argc == 2 then
@@ -384,35 +386,35 @@ function M.ensure(terminal_manager)
         end,
     })
 
-    vim.api.nvim_create_user_command('TerminalManagerList', list_terminals_command, {
+    vim.api.nvim_create_user_command('TerminaliaList', list_terminals_command, {
         nargs = '*',
         desc = 'List registered terminals: [namespace] [cwd_prefix]',
         complete = function(arglead, cmdline)
             local argc = list_completion_arg_count(cmdline)
 
             if argc == 1 then
-                return namespace_completions(arglead, terminal_manager.api)
+                return namespace_completions(arglead, api)
             end
 
             if argc == 2 then
-                return list_cwd_prefix_completions(arglead, cmdline, terminal_manager.api)
+                return list_cwd_prefix_completions(arglead, cmdline, api)
             end
 
             return {}
         end,
     })
 
-    vim.api.nvim_create_user_command('TerminalManagerHistory', history_command, {
+    vim.api.nvim_create_user_command('TerminaliaHistory', history_command, {
         nargs = 1,
         desc = 'Open captured history for a terminal: <id>',
         complete = function(arglead)
-            return terminal_id_completions(arglead, terminal_manager.api)
+            return terminal_id_completions(arglead, api)
         end,
     })
 
-    vim.api.nvim_create_user_command('TerminalManagerOpenUri', open_uri_command, {
+    vim.api.nvim_create_user_command('TerminaliaOpenUri', open_uri_command, {
         nargs = '+',
-        desc = 'Open a terminal-manager URI: <uri> [view]',
+        desc = 'Open a Terminalia URI: <uri> [view]',
         complete = function(arglead, cmdline)
             local argc = completion_arg_count(cmdline)
 
@@ -424,9 +426,9 @@ function M.ensure(terminal_manager)
         end,
     })
 
-    vim.api.nvim_create_user_command('TerminalManagerOverseerCurrent', function()
-        local context = terminal_manager.api.overseer_context()
-        local explicit = terminal_manager.config.overseer_context_id
+    vim.api.nvim_create_user_command('TerminaliaOverseerCurrent', function()
+        local context = api.overseer_context()
+        local explicit = terminalia.config.overseer_context_id
         local mode = explicit ~= nil and explicit ~= '' and 'explicit' or 'current'
 
         vim.notify(string.format('Overseer context (%s): %s  [%s]', mode, context.id, context.label))
@@ -435,21 +437,21 @@ function M.ensure(terminal_manager)
         desc = 'Show the effective Overseer terminal context',
     })
 
-    vim.api.nvim_create_user_command('TerminalManagerOverseerUse', function(command_opts)
+    vim.api.nvim_create_user_command('TerminaliaOverseerUse', function(command_opts)
         local args = parse_command_args(command_opts)
-        local context = terminal_manager.api.set_overseer_context(args[1])
+        local context = api.set_overseer_context(args[1])
 
         vim.notify(string.format('Overseer context: %s  [%s]', context.id, context.label))
     end, {
         nargs = 1,
         desc = 'Set an explicit Overseer terminal context: <context_id>',
         complete = function(arglead)
-            return context_id_completions(arglead, terminal_manager.api)
+            return context_id_completions(arglead, api)
         end,
     })
 
-    vim.api.nvim_create_user_command('TerminalManagerOverseerClear', function()
-        local context = terminal_manager.api.clear_overseer_context()
+    vim.api.nvim_create_user_command('TerminaliaOverseerClear', function()
+        local context = api.clear_overseer_context()
 
         vim.notify(string.format('Overseer context reset to current: %s  [%s]', context.id, context.label))
     end, {

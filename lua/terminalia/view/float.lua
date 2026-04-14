@@ -8,8 +8,8 @@ local function scaled_size(ratio, total)
 end
 
 ---Reveal a terminal in a floating window.
----@param terminal terminal_manager.TerminalRecord
----@param cfg terminal_manager.Config
+---@param terminal terminalia.TerminalRecord
+---@param cfg terminalia.Config
 ---@return integer
 function M.open(terminal, cfg)
     local float_cfg = cfg.float
