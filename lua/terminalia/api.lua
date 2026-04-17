@@ -363,7 +363,13 @@ function M.history_lines(id)
 
     assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
 
-    return history.read_lines(id)
+    local live_output, has_live_output = runtime.output(id)
+
+    if not has_live_output then
+        return history.read_lines(id)
+    end
+
+    return history.read_lines_with_live_output(id, live_output)
 end
 
 ---Return the captured output snapshot for a terminal id.
@@ -378,6 +384,8 @@ function M.output(id)
 
     if not has_live_output then
         output = history.read_text(id)
+    else
+        output = history.read_text_with_live_output(id, output)
     end
 
     return {
@@ -385,6 +393,23 @@ function M.output(id)
         status = terminal.status,
         exit_code = terminal.exit_code,
     }
+end
+
+---Return the captured output snapshot as lines for a terminal id.
+---@param id string
+---@return string[]
+function M.output_lines(id)
+    local terminal = registry.get(id) or runtime.exited_terminal(id)
+
+    assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
+
+    local live_output, has_live_output = runtime.output(id)
+
+    if not has_live_output then
+        return history.read_lines(id)
+    end
+
+    return history.read_lines_with_live_output(id, live_output)
 end
 
 ---Wait for a terminal job to exit.
@@ -419,7 +444,8 @@ function M.open_history(id)
 
     assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
 
-    local lines = history.read_lines(id)
+    local live_output, has_live_output = runtime.output(id)
+    local lines = has_live_output and history.read_lines_with_live_output(id, live_output) or history.read_lines(id)
 
     return history_view.open(terminal, lines, config.get())
 end

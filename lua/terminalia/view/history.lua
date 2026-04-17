@@ -21,7 +21,8 @@ function M.open(terminal, lines, cfg)
     vim.bo[bufnr].bufhidden = 'wipe'
     vim.bo[bufnr].swapfile = false
     vim.bo[bufnr].modifiable = true
-    vim.bo[bufnr].filetype = 'terminalmanagerhistory'
+    vim.bo[bufnr].filetype = 'terminaliahistory'
+    vim.bo[bufnr].modifiable = true
     vim.api.nvim_buf_set_name(
         bufnr,
         uri.encode_history_uri({
@@ -31,8 +32,12 @@ function M.open(terminal, lines, cfg)
         })
     )
     vim.api.nvim_win_set_buf(0, bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, #lines > 0 and lines or { '[no history captured]' })
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
     vim.bo[bufnr].modifiable = false
+    vim.wo.wrap = false
+    vim.wo.number = false
+    vim.wo.relativenumber = false
+    vim.api.nvim_win_set_cursor(0, { math.max(1, vim.api.nvim_buf_line_count(bufnr)), 0 })
 
     return vim.api.nvim_get_current_win()
 end

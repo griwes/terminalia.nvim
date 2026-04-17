@@ -146,7 +146,7 @@ function M.ensure(terminalia)
 
     vim.api.nvim_create_user_command('TerminaliaHistory', history_command, {
         nargs = 1,
-        desc = 'Open captured history for a terminal: <id>',
+        desc = 'Open transcript history for a terminal: <id>',
         complete = function(arglead)
             return command_completion.terminal_id_completions(arglead, api)
         end,

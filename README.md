@@ -80,6 +80,8 @@ local terminal = terminalia.api.create({
 
 terminalia.api.start(terminal.id)
 print(vim.inspect(terminalia.api.output(terminal.id)))
+print(vim.inspect(terminalia.api.output_lines(terminal.id)))
+print(vim.inspect(terminalia.api.history_lines(terminal.id)))
 terminalia.api.open(terminal.id, { view = 'split' })
 terminalia.api.list({
     namespace = 'workspace',
@@ -108,6 +110,8 @@ Additional control helpers:
 - `terminalia.api.open_uri(uri, opts)`
 - `terminalia.api.start(id)`
 - `terminalia.api.send(id, data)`
+- `terminalia.api.output_lines(id)`
+- `terminalia.api.history_lines(id)`
 - `terminalia.api.output(id)`
 - `terminalia.api.wait(id, timeout_ms)`
 - `terminalia.api.kill(id)`

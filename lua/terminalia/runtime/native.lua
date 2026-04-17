@@ -20,6 +20,7 @@ local disposable_bufnrs = {}
 ---@type table<string, table>
 local buffer_state = {}
 local session_generation = 0
+local cwd_fallback_prefix = '__TERMINALIA_CWD__='
 local output_helper
 local buffer_helper
 local visible_windows_for_buffer
@@ -37,6 +38,52 @@ local function current_environment()
     end
 
     return env
+end
+
+---@param command string|string[]
+---@return boolean
+local function supports_shell_cwd_fallback(command)
+    if type(command) == 'string' then
+        return command == vim.o.shell
+    end
+
+    if type(command) ~= 'table' or type(command[1]) ~= 'string' then
+        return false
+    end
+
+    local executable = vim.fs.basename(command[1])
+
+    return executable == 'sh' or executable == 'bash' or executable == 'zsh'
+end
+
+---@param command string|string[]
+---@return string|string[]
+local function with_shell_cwd_fallback(command)
+    if config.get().emit_cwd_fallback_marker ~= true or not supports_shell_cwd_fallback(command) then
+        return command
+    end
+
+    local marker = 'printf \'__TERMINALIA_CWD__=%s\\n\' "$PWD"'
+
+    if type(command) == 'string' then
+        return string.format('%s -lc %q', command, marker .. '; exec "$SHELL" -i')
+    end
+
+    local wrapped = vim.deepcopy(command)
+    local command_string = table.concat(vim.list_slice(wrapped, 2), ' ')
+
+    if command_string == '' then
+        wrapped[2] = '-lc'
+        wrapped[3] = marker .. '; exec "$SHELL" -i'
+        return wrapped
+    end
+
+    if wrapped[2] == '-lc' or wrapped[2] == '-c' then
+        wrapped[3] = marker .. '; ' .. (wrapped[3] or '')
+        return wrapped
+    end
+
+    return command
 end
 
 ---@param terminal terminalia.TerminalRecord
@@ -67,6 +114,58 @@ local function parse_osc7_directory(sequence)
     return directory
 end
 
+---@param line string
+---@return string?
+local function parse_cwd_fallback_line(line)
+    if type(line) ~= 'string' or not vim.startswith(line, cwd_fallback_prefix) then
+        return nil
+    end
+
+    local directory = line:sub(#cwd_fallback_prefix + 1)
+
+    if directory == '' or vim.fn.isdirectory(directory) == 0 then
+        return nil
+    end
+
+    return directory
+end
+
+---@param terminal_id string
+---@param data string[]?
+local function apply_cwd_fallback_chunks(terminal_id, data)
+    if type(data) ~= 'table' or registry.get(terminal_id) == nil then
+        return
+    end
+
+    for _, chunk in ipairs(data) do
+        local directory = parse_cwd_fallback_line(chunk)
+
+        if directory ~= nil then
+            registry.update(terminal_id, {
+                cwd = directory,
+            })
+        end
+    end
+end
+
+---@param data string[]?
+---@return string[]?
+local function strip_cwd_fallback_chunks(data)
+    if type(data) ~= 'table' then
+        return data
+    end
+
+    local filtered = {}
+
+    for _, chunk in ipairs(data) do
+        if parse_cwd_fallback_line(chunk) == nil then
+            table.insert(filtered, chunk)
+        end
+    end
+
+    return filtered
+end
+
 ---Register runtime autocmds once.
 function M.ensure_autocmds()
     if autocmds_registered then
@@ -81,7 +180,7 @@ function M.ensure_autocmds()
         group = group,
         desc = 'Update Terminalia cwd metadata from OSC 7 requests',
         callback = function(event)
-            local terminal_id = vim.b[event.buf].terminal_manager_id
+            local terminal_id = vim.b[event.buf].terminalia_id
 
             if terminal_id == nil then
                 return
@@ -109,7 +208,7 @@ end
 ---@param terminal terminalia.TerminalRecord
 ---@return string|string[]
 local function resolve_command(terminal)
-    return terminal.command or config.get().shell
+    return with_shell_cwd_fallback(terminal.command or config.get().shell)
 end
 
 local buffer_runtime_state = {
@@ -191,6 +290,8 @@ function M.ensure_started(terminal)
                     return
                 end
 
+                apply_cwd_fallback_chunks(start_terminal.id, data)
+                data = strip_cwd_fallback_chunks(data)
                 if config.get().persist_history ~= true then
                     output_helper.append_output(start_terminal.id, data)
                 end
@@ -201,6 +302,8 @@ function M.ensure_started(terminal)
                     return
                 end
 
+                apply_cwd_fallback_chunks(start_terminal.id, data)
+                data = strip_cwd_fallback_chunks(data)
                 if config.get().persist_history ~= true then
                     output_helper.append_output(start_terminal.id, data)
                 end
@@ -443,6 +546,18 @@ function M.clear()
         buffer_state[key] = nil
     end
     buffer_helper.cleanup_hidden_startup_window()
+end
+
+---@param terminal_id string
+---@param data string[]?
+function M._apply_cwd_fallback_chunks(terminal_id, data)
+    apply_cwd_fallback_chunks(terminal_id, data)
+end
+
+---@param command string|string[]
+---@return string|string[]
+function M._resolve_command_with_fallback(command)
+    return with_shell_cwd_fallback(command)
 end
 
 vim.api.nvim_create_autocmd({ 'BufHidden', 'BufWipeout', 'WinClosed' }, {

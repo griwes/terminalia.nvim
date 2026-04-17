@@ -19,6 +19,7 @@
 ---@field split_size integer
 ---@field float terminalia.FloatConfig
 ---@field notify_on_exit boolean
+---@field emit_cwd_fallback_marker boolean
 
 local M = {}
 local valid_views = {
@@ -54,6 +55,7 @@ local defaults = {
         border = 'rounded',
     },
     notify_on_exit = true,
+    emit_cwd_fallback_marker = true,
 }
 
 ---@type terminalia.Config

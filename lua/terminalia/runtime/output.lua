@@ -1,10 +1,17 @@
 local M = {}
+local cwd_fallback_prefix = '__TERMINALIA_CWD__='
 
 ---@param state table
 ---@param deps table
 ---@return table
 function M.new(state, deps)
     local helper = {}
+
+    ---@param chunk string
+    ---@return boolean
+    local function is_cwd_fallback_chunk(chunk)
+        return type(chunk) == 'string' and vim.startswith(chunk, cwd_fallback_prefix)
+    end
 
     ---@param id string
     ---@param data? string[]
@@ -23,10 +30,16 @@ function M.new(state, deps)
                 value = tail .. value
             end
 
+            if is_cwd_fallback_chunk(value) then
+                value = ''
+            end
+
             if index == #data then
                 state.pending_output[id] = value
             else
-                table.insert(pieces, value)
+                if value ~= '' then
+                    table.insert(pieces, value)
+                end
             end
         end
 

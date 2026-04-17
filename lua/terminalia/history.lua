@@ -1,6 +1,7 @@
 local config = require('terminalia.config')
 
 local M = {}
+local cwd_fallback_prefix = '__TERMINALIA_CWD__='
 
 ---@type table<string, string>
 local pending = {}
@@ -31,6 +32,12 @@ local function append_lines(id, lines)
     vim.fn.writefile(lines, M.path(id), 'a')
 end
 
+---@param chunk string
+---@return boolean
+local function is_cwd_fallback_chunk(chunk)
+    return type(chunk) == 'string' and vim.startswith(chunk, cwd_fallback_prefix)
+end
+
 ---Append job callback chunks to durable history storage.
 ---@param id string
 ---@param data? string[]
@@ -49,10 +56,16 @@ function M.append_chunks(id, data)
             value = tail .. value
         end
 
+        if is_cwd_fallback_chunk(value) then
+            value = ''
+        end
+
         if index == #data then
             pending[id] = value
         else
-            table.insert(lines, value)
+            if value ~= '' then
+                table.insert(lines, value)
+            end
         end
     end
 
@@ -100,6 +113,35 @@ end
 ---@return string
 function M.read_text(id)
     return table.concat(M.read_lines(id), '\n')
+end
+
+---Return durable history text plus any live runtime fragment text.
+---@param id string
+---@param live_output? string
+---@return string
+function M.read_text_with_live_output(id, live_output)
+    return table.concat(M.read_lines_with_live_output(id, live_output), '\n')
+end
+
+---Return durable history lines plus any live runtime fragment lines.
+---@param id string
+---@param live_output? string
+---@return string[]
+function M.read_lines_with_live_output(id, live_output)
+    local lines = M.read_lines(id)
+
+    if type(live_output) ~= 'string' or live_output == '' then
+        return lines
+    end
+
+    for line in string.gmatch(live_output, '([^\n]*)\n?') do
+        if line == '' then
+            break
+        end
+        table.insert(lines, line)
+    end
+
+    return lines
 end
 
 ---Delete a terminal's durable history and pending fragments.
