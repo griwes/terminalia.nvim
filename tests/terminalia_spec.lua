@@ -2,6 +2,19 @@ describe('terminalia', function()
     local history_dir
     local state_file
 
+    ---@param opts? table
+    local function setup_terminalia(opts)
+        local plugin = require('terminalia')
+
+        plugin.setup(vim.tbl_deep_extend('force', {
+            history_dir = history_dir,
+            notify_on_exit = false,
+            state_file = state_file,
+        }, opts or {}))
+
+        return plugin
+    end
+
     ---@param fn fun(): boolean, string?
     ---@return boolean, string?, string[]
     local function with_notifications(fn)
@@ -20,15 +33,11 @@ describe('terminalia', function()
     end
 
     before_each(function()
-        local plugin = require('terminalia')
         history_dir = vim.fn.tempname()
         state_file = vim.fn.tempname()
 
-        plugin.setup({
-            history_dir = history_dir,
-            notify_on_exit = false,
+        local plugin = setup_terminalia({
             persist_terminals = true,
-            state_file = state_file,
         })
         plugin.api.clear()
     end)
@@ -45,7 +54,6 @@ describe('terminalia', function()
     end)
 
     it('registers a session contributor when continuity.nvim is available', function()
-        local plugin = require('terminalia')
         local observed = nil
         local original_session = package.loaded.continuity
 
@@ -61,11 +69,7 @@ describe('terminalia', function()
         }
 
         local ok, err = pcall(function()
-            plugin.setup({
-                history_dir = history_dir,
-                notify_on_exit = false,
-                state_file = state_file,
-            })
+            setup_terminalia()
         end)
 
         package.loaded.continuity = original_session

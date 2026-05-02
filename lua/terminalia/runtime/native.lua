@@ -25,7 +25,7 @@ local output_helper
 local buffer_helper
 local visible_windows_for_buffer
 
-local disposable_cleanup_group = vim.api.nvim_create_augroup('terminal-manager-disposable-cleanup', {
+local disposable_cleanup_group = vim.api.nvim_create_augroup('terminalia-disposable-cleanup', {
     clear = true,
 })
 
