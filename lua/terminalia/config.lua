@@ -1,4 +1,5 @@
 ---@alias terminalia.ViewKind 'split'|'float'
+---@alias terminalia.ExternalOpenPolicy 'tab'|'current'|'split'|'vsplit'|'float'|'reuse'
 
 ---@class terminalia.FloatConfig
 ---@field width number
@@ -20,11 +21,22 @@
 ---@field float terminalia.FloatConfig
 ---@field notify_on_exit boolean
 ---@field emit_cwd_fallback_marker boolean
+---@field enable_editor_shell_integration boolean
+---@field editor_shell_commands string[]
+---@field external_open_policy terminalia.ExternalOpenPolicy
 
 local M = {}
 local valid_views = {
     split = true,
     float = true,
+}
+local valid_external_open_policies = {
+    current = true,
+    float = true,
+    reuse = true,
+    split = true,
+    tab = true,
+    vsplit = true,
 }
 local valid_split_directions = {
     aboveleft = true,
@@ -55,7 +67,10 @@ local defaults = {
         border = 'rounded',
     },
     notify_on_exit = true,
-    emit_cwd_fallback_marker = true,
+    emit_cwd_fallback_marker = false,
+    enable_editor_shell_integration = true,
+    editor_shell_commands = { 'nvim', 'vim', 'vi' },
+    external_open_policy = 'tab',
 }
 
 ---@type terminalia.Config
@@ -71,9 +86,22 @@ function M.normalize(user_opts, base_opts)
     if not valid_views[normalized.default_view] then
         normalized.default_view = defaults.default_view
     end
+    if not valid_external_open_policies[normalized.external_open_policy] then
+        normalized.external_open_policy = defaults.external_open_policy
+    end
     normalized.split_direction = M.normalize_split_direction(normalized.split_direction)
 
     return normalized
+end
+
+---@param policy? string
+---@return terminalia.ExternalOpenPolicy
+function M.normalize_external_open_policy(policy)
+    if valid_external_open_policies[policy] then
+        return policy
+    end
+
+    return M.get().external_open_policy
 end
 
 ---Preview a configuration merged onto a base config.

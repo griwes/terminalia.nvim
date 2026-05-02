@@ -3,8 +3,12 @@ local context_api = require('terminalia.api.context')
 local uri_api = require('terminalia.api.uri')
 local history = require('terminalia.history')
 local ministry_integration = require('terminalia.integrations.ministry')
+local relay_args = require('terminalia.relay.args')
+local relay_open = require('terminalia.relay.open')
+local terminal_action_protocol = require('terminalia.terminal.action_protocol')
 local registry = require('terminalia.terminal.registry')
 local runtime = require('terminalia.runtime.native')
+local shell_integration = require('terminalia.terminal.shell_integration')
 local uri = require('terminalia.uri')
 local history_view = require('terminalia.view.history')
 
@@ -180,6 +184,74 @@ end
 ---@return integer|terminalia.TerminalRecord
 function M.open_uri(uri_value, opts)
     return uri_api.open_uri(M, uri_value, opts)
+end
+
+---Build an external-editor open plan from argv-style arguments.
+---@param argv string[]
+---@param opts? { cwd?: string, open_policy?: terminalia.ExternalOpenPolicy }
+---@return terminalia.ExternalOpenPlan
+function M.plan_external_open(argv, opts)
+    return relay_args.plan(argv, opts)
+end
+
+---Open files from an external-editor argv-style invocation.
+---@param argv string[]
+---@param opts? { cwd?: string, open_policy?: terminalia.ExternalOpenPolicy, stdin_data?: string|string[] }
+---@return terminalia.ExternalOpenTarget[]
+function M.open_external(argv, opts)
+    local plan = M.plan_external_open(argv, opts)
+    return relay_open.open_plan(plan, opts)
+end
+
+---Build a Terminalia-owned terminal OSC open action.
+---@param payload table
+---@return string
+function M.build_terminal_open_action(payload)
+    return terminal_action_protocol.open_sequence(payload)
+end
+
+---Parse a Terminalia-owned terminal OSC action.
+---@param sequence string
+---@return terminalia.TerminalAction?
+function M.parse_terminal_action_sequence(sequence)
+    return terminal_action_protocol.parse_sequence(sequence)
+end
+
+---Parse a Terminalia-owned terminal OSC open action payload.
+---@param sequence string
+---@return table?
+function M.parse_terminal_action(sequence)
+    return terminal_action_protocol.parse_open_sequence(sequence)
+end
+
+---Create state for stream-safe Terminalia action stripping.
+---@return terminalia.TerminalActionStripState
+function M.new_terminal_action_strip_state()
+    return terminal_action_protocol.new_strip_state()
+end
+
+---Strip Terminalia-owned action markup from terminal output chunks.
+---@param chunks string[]?
+---@param state? terminalia.TerminalActionStripState
+---@return string[]?
+function M.strip_terminal_action_chunks(chunks, state)
+    return terminal_action_protocol.strip_action_chunks(chunks, state)
+end
+
+---Extract Terminalia-owned actions while stripping their markup from output.
+---@param chunks string[]?
+---@param state? terminalia.TerminalActionStripState
+---@return string[]?
+---@return terminalia.TerminalAction[]
+function M.extract_terminal_action_chunks(chunks, state)
+    return terminal_action_protocol.extract_action_chunks(chunks, state)
+end
+
+---Build a shell snippet that turns editor commands into Terminalia OSC open actions.
+---@param opts? terminalia.ShellIntegrationOptions
+---@return string
+function M.build_terminal_open_shell_integration(opts)
+    return shell_integration.open_action_prelude(opts)
 end
 
 ---Create and immediately reveal a terminal.

@@ -90,6 +90,10 @@ function M.ensure(terminalia)
         })
     end
 
+    local function external_open_command(command_opts)
+        api.open_external(parse_command_args(command_opts))
+    end
+
     vim.api.nvim_create_user_command('TerminaliaNew', new_terminal_command, {
         nargs = '*',
         desc = 'Create and reveal a terminal: [name] [namespace] [view]',
@@ -164,6 +168,11 @@ function M.ensure(terminalia)
 
             return {}
         end,
+    })
+
+    vim.api.nvim_create_user_command('TerminaliaExternalOpen', external_open_command, {
+        nargs = '*',
+        desc = 'Open files using flatten-compatible editor argv semantics',
     })
 
     vim.api.nvim_create_user_command('TerminaliaOverseerCurrent', function()

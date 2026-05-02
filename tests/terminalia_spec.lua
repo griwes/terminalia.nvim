@@ -1245,6 +1245,7 @@ describe('terminalia', function()
         assert.is_truthy(commands.TerminaliaOpen)
         assert.is_truthy(commands.TerminaliaList)
         assert.is_truthy(commands.TerminaliaHistory)
+        assert.is_truthy(commands.TerminaliaExternalOpen)
     end)
 
     it('completes terminal ids for open and history commands', function()
@@ -2599,6 +2600,49 @@ describe('terminalia', function()
         assert.are.equal(cwd, assert(plugin.api.get(terminal.id)).cwd)
     end)
 
+    it('strips terminal line endings from shell-output cwd fallback markers', function()
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
+        local cwd = vim.fn.tempname()
+
+        vim.fn.mkdir(cwd, 'p')
+
+        local terminal = plugin.api.create({
+            name = 'shell',
+            cwd = '/tmp',
+        })
+
+        runtime._apply_cwd_fallback_chunks(terminal.id, {
+            '__TERMINALIA_CWD__=' .. cwd .. '\r',
+        })
+
+        assert.are.equal(cwd, assert(plugin.api.get(terminal.id)).cwd)
+    end)
+
+    it('strips shell-output cwd fallback markers when prompt output shares the chunk', function()
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
+        local cwd = vim.fn.tempname()
+
+        vim.fn.mkdir(cwd, 'p')
+
+        local terminal = plugin.api.create({
+            name = 'shell',
+            cwd = '/tmp',
+        })
+
+        runtime._apply_cwd_fallback_chunks(terminal.id, {
+            '__TERMINALIA_CWD__=' .. cwd .. '\r\nprompt',
+        })
+
+        local stripped = runtime._strip_cwd_fallback_chunks({
+            '__TERMINALIA_CWD__=' .. cwd .. '\r\nprompt',
+        })
+
+        assert.are.equal(cwd, assert(plugin.api.get(terminal.id)).cwd)
+        assert.are.same({ 'prompt' }, stripped)
+    end)
+
     it('ignores invalid shell-output cwd fallback markers', function()
         local plugin = require('terminalia')
         local runtime = require('terminalia.runtime.native')
@@ -2617,7 +2661,11 @@ describe('terminalia', function()
     end)
 
     it('wraps supported shell launches with cwd fallback marker emission', function()
+        local plugin = require('terminalia')
         local runtime = require('terminalia.runtime.native')
+        plugin.setup({
+            emit_cwd_fallback_marker = true,
+        })
         local resolved = runtime._resolve_command_with_fallback({ 'sh', '-lc', 'echo ready' })
 
         assert.are.same('sh', resolved[1])

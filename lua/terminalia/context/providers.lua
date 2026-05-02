@@ -49,14 +49,15 @@ function M.reset()
 end
 
 ---@param kind string
----@param provider { plan_command: fun(context: terminalia.TerminalContext, command: string|string[], opts?: table): table }
+---@param provider { plan_command: fun(context: terminalia.TerminalContext, command: string|string[], opts?: table): table, transform_terminal_action?: fun(context: terminalia.TerminalContext, action: terminalia.TerminalAction, terminal: terminalia.TerminalRecord): terminalia.TerminalAction?|false, restore_context?: fun(context_spec: terminalia.TerminalContext, parent_context: terminalia.TerminalContext): terminalia.TerminalContext? }
 function M.register(kind, provider)
     assert(type(kind) == 'string' and kind ~= '', 'Context provider kind must be a non-empty string')
     assert(
         type(provider) == 'table'
             and type(provider.plan_command) == 'function'
+            and (provider.transform_terminal_action == nil or type(provider.transform_terminal_action) == 'function')
             and (provider.restore_context == nil or type(provider.restore_context) == 'function'),
-        'Context provider must define plan_command and may define restore_context'
+        'Context provider must define plan_command and may define transform_terminal_action or restore_context'
     )
     providers[kind] = provider
 end
@@ -77,6 +78,26 @@ function M.plan_command(context, command, opts)
         string.format('No terminal context provider registered for kind: %s', context.kind)
     )
     return provider.plan_command(context, command, opts)
+end
+
+---@param context terminalia.TerminalContext
+---@param action terminalia.TerminalAction
+---@param terminal terminalia.TerminalRecord
+---@return terminalia.TerminalAction?|false
+function M.transform_terminal_action(context, action, terminal)
+    local provider = providers[context.kind]
+
+    if provider == nil or type(provider.transform_terminal_action) ~= 'function' then
+        return action
+    end
+
+    local transformed = provider.transform_terminal_action(context, action, terminal)
+
+    if transformed == nil then
+        return action
+    end
+
+    return transformed
 end
 
 ---@param context_spec terminalia.TerminalContext

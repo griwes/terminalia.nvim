@@ -1,7 +1,11 @@
 local config = require('terminalia.config')
+local context_providers = require('terminalia.context.providers')
+local contexts = require('terminalia.context.state')
 local history = require('terminalia.history')
 local buffer_helpers = require('terminalia.runtime.buffer')
+local action_protocol = require('terminalia.terminal.action_protocol')
 local registry = require('terminalia.terminal.registry')
+local shell_integration = require('terminalia.terminal.shell_integration')
 local output_helpers = require('terminalia.runtime.output')
 local uri = require('terminalia.uri')
 
@@ -24,6 +28,10 @@ local cwd_fallback_prefix = '__TERMINALIA_CWD__='
 local output_helper
 local buffer_helper
 local visible_windows_for_buffer
+---@type table<string, table<string, terminalia.TerminalActionStripState>>
+local action_strip_state = {}
+---@type table<string, string[]>
+local launch_cleanup_paths = {}
 
 local disposable_cleanup_group = vim.api.nvim_create_augroup('terminalia-disposable-cleanup', {
     clear = true,
@@ -44,10 +52,14 @@ end
 ---@return boolean
 local function supports_shell_cwd_fallback(command)
     if type(command) == 'string' then
-        return command == vim.o.shell
+        return false
     end
 
     if type(command) ~= 'table' or type(command[1]) ~= 'string' then
+        return false
+    end
+
+    if #command == 1 then
         return false
     end
 
@@ -96,6 +108,16 @@ local function resolve_environment(terminal)
     return vim.tbl_extend('force', current_environment(), terminal.env)
 end
 
+---@param env table<string, string>?
+---@return table<string, string>?
+local function nil_if_empty_env(env)
+    if type(env) ~= 'table' or next(env) == nil then
+        return nil
+    end
+
+    return env
+end
+
 ---@param sequence string
 ---@return string?
 local function parse_osc7_directory(sequence)
@@ -121,13 +143,39 @@ local function parse_cwd_fallback_line(line)
         return nil
     end
 
-    local directory = line:sub(#cwd_fallback_prefix + 1)
+    local directory = line:sub(#cwd_fallback_prefix + 1):match('^[^\r\n]*')
 
     if directory == '' or vim.fn.isdirectory(directory) == 0 then
         return nil
     end
 
     return directory
+end
+
+---@param chunk string
+---@return string?
+local function strip_cwd_fallback_chunk(chunk)
+    if type(chunk) ~= 'string' or not vim.startswith(chunk, cwd_fallback_prefix) then
+        return chunk
+    end
+
+    local line_end = chunk:find('[\r\n]')
+
+    if line_end == nil then
+        return ''
+    end
+
+    while line_end <= #chunk do
+        local char = chunk:sub(line_end, line_end)
+
+        if char ~= '\r' and char ~= '\n' then
+            break
+        end
+
+        line_end = line_end + 1
+    end
+
+    return chunk:sub(line_end)
 end
 
 ---@param terminal_id string
@@ -158,12 +206,125 @@ local function strip_cwd_fallback_chunks(data)
     local filtered = {}
 
     for _, chunk in ipairs(data) do
-        if parse_cwd_fallback_line(chunk) == nil then
-            table.insert(filtered, chunk)
+        local stripped = strip_cwd_fallback_chunk(chunk)
+
+        if stripped ~= '' then
+            table.insert(filtered, stripped)
         end
     end
 
     return filtered
+end
+
+---@param terminal terminalia.TerminalRecord
+---@param action terminalia.TerminalAction
+local function open_terminalia_action(terminal, action)
+    local payload = vim.deepcopy(action.payload or {})
+
+    if action.kind ~= 'open' then
+        return
+    end
+
+    payload.cwd = payload.cwd or terminal.cwd
+
+    vim.schedule(function()
+        local ok, err = pcall(function()
+            local api = require('terminalia.api')
+            local plan = api.plan_external_open(payload.argv or {}, {
+                cwd = payload.cwd,
+                open_policy = payload.open_policy,
+            })
+
+            if #(plan.pre_commands or {}) > 0 or #(plan.commands or {}) > 0 then
+                error('Terminalia terminal actions cannot execute editor commands')
+            end
+
+            require('terminalia.relay.open').open_plan(plan, {
+                stdin_data = payload.stdin_data,
+            })
+        end)
+
+        if not ok then
+            vim.notify(string.format('Terminalia terminal action failed: %s', err), vim.log.levels.ERROR)
+        end
+    end)
+end
+
+---@param terminal terminalia.TerminalRecord
+---@param sequence string
+local function handle_terminalia_action_sequence(terminal, sequence)
+    local action = action_protocol.parse_sequence(sequence)
+
+    if action == nil then
+        return
+    end
+
+    local context = contexts.get(terminal.context_id)
+
+    if context ~= nil then
+        local ok, transformed = pcall(context_providers.transform_terminal_action, context, action, terminal)
+
+        if not ok then
+            vim.notify(
+                string.format('Terminalia terminal action transform failed: %s', transformed),
+                vim.log.levels.ERROR
+            )
+            return
+        end
+
+        if transformed == false then
+            return
+        end
+
+        action = transformed or action
+    end
+
+    open_terminalia_action(terminal, action)
+end
+
+---@param terminal_id string
+local function clear_action_strip_state(terminal_id)
+    action_strip_state[terminal_id] = nil
+end
+
+---@param launch terminalia.PreparedShellLaunch?
+local function cleanup_launch(launch)
+    if type(launch) ~= 'table' or type(launch.cleanup_paths) ~= 'table' then
+        return
+    end
+
+    for _, path in ipairs(launch.cleanup_paths) do
+        if type(path) == 'string' and path ~= '' then
+            pcall(vim.fn.delete, path, 'rf')
+        end
+    end
+
+    launch.cleanup_paths = nil
+end
+
+---@param terminal_id string
+local function cleanup_launch_paths(terminal_id)
+    local paths = launch_cleanup_paths[terminal_id]
+
+    if type(paths) ~= 'table' then
+        return
+    end
+
+    launch_cleanup_paths[terminal_id] = nil
+    cleanup_launch({
+        cleanup_paths = paths,
+    })
+end
+
+---@param terminal_id string
+---@param stream_name string
+---@return terminalia.TerminalActionStripState
+local function action_strip_state_for(terminal_id, stream_name)
+    action_strip_state[terminal_id] = action_strip_state[terminal_id] or {}
+    action_strip_state[terminal_id][stream_name] = action_strip_state[terminal_id][stream_name]
+        or action_protocol.new_strip_state()
+
+    return action_strip_state[terminal_id][stream_name]
 end
 
 ---Register runtime autocmds once.
@@ -193,6 +354,12 @@ function M.ensure_autocmds()
             local directory = parse_osc7_directory(event.data.sequence)
 
             if directory == nil or registry.get(terminal_id) == nil then
+                local terminal = registry.get(terminal_id)
+
+                if terminal ~= nil then
+                    handle_terminalia_action_sequence(terminal, event.data.sequence)
+                end
+
                 return
             end
 
@@ -206,9 +373,20 @@ function M.ensure_autocmds()
 end
 
 ---@param terminal terminalia.TerminalRecord
----@return string|string[]
-local function resolve_command(terminal)
-    return with_shell_cwd_fallback(terminal.command or config.get().shell)
+---@return terminalia.PreparedShellLaunch
+local function resolve_launch(terminal)
+    local cfg = config.get()
+    local prepared = shell_integration.prepare_launch(terminal.command or cfg.shell, {
+        commands = cfg.editor_shell_commands,
+        enabled = cfg.enable_editor_shell_integration,
+        env = resolve_environment(terminal),
+        open_policy = cfg.external_open_policy,
+    })
+
+    prepared.command = with_shell_cwd_fallback(prepared.command)
+    prepared.env = nil_if_empty_env(prepared.env)
+
+    return prepared
 end
 
 local buffer_runtime_state = {
@@ -278,13 +456,22 @@ function M.ensure_started(terminal)
     end
     local job_id
     local start_generation = session_generation
+    local launch
 
     job_id = buffer_helper.with_hidden_terminal_window(bufnr, function()
         local start_terminal = assert(registry.get(current.id), string.format('Unknown terminal id: %s', current.id))
 
-        return vim.fn.termopen(resolve_command(start_terminal), {
+        launch = resolve_launch(start_terminal)
+
+        if type(launch.cleanup_paths) == 'table' then
+            launch_cleanup_paths[start_terminal.id] = vim.deepcopy(launch.cleanup_paths)
+        else
+            launch_cleanup_paths[start_terminal.id] = nil
+        end
+
+        local started_job_id = vim.fn.termopen(launch.command, {
             cwd = start_terminal.cwd,
-            env = resolve_environment(start_terminal),
+            env = launch.env,
             on_stdout = function(_, data)
                 if start_generation ~= session_generation then
                     return
@@ -292,6 +479,7 @@ function M.ensure_started(terminal)
 
                 apply_cwd_fallback_chunks(start_terminal.id, data)
                 data = strip_cwd_fallback_chunks(data)
+                data = action_protocol.strip_action_chunks(data, action_strip_state_for(start_terminal.id, 'stdout'))
                 if config.get().persist_history ~= true then
                     output_helper.append_output(start_terminal.id, data)
                 end
@@ -304,12 +492,15 @@ function M.ensure_started(terminal)
 
                 apply_cwd_fallback_chunks(start_terminal.id, data)
                 data = strip_cwd_fallback_chunks(data)
+                data = action_protocol.strip_action_chunks(data, action_strip_state_for(start_terminal.id, 'stderr'))
                 if config.get().persist_history ~= true then
                     output_helper.append_output(start_terminal.id, data)
                 end
                 history.append_chunks(start_terminal.id, data)
             end,
             on_exit = function(_, exit_code)
+                cleanup_launch(launch)
+
                 if start_generation ~= session_generation then
                     return
                 end
@@ -317,6 +508,7 @@ function M.ensure_started(terminal)
                 local exited_terminal = registry.get(start_terminal.id)
 
                 history.flush(start_terminal.id)
+                cleanup_launch_paths(start_terminal.id)
 
                 if not exited_terminal then
                     return
@@ -341,6 +533,7 @@ function M.ensure_started(terminal)
                     end
 
                     registry.remove(exited_terminal.id, { wipe_buffer = false, clear_history = false })
+                    clear_action_strip_state(exited_terminal.id)
                     pending_disposable_cleanup[exited_terminal.id] = true
                     return
                 end
@@ -358,6 +551,8 @@ function M.ensure_started(terminal)
                 })
             end,
         })
+
+        return started_job_id
     end)
 
     if not job_id or job_id <= 0 then
@@ -365,6 +560,8 @@ function M.ensure_started(terminal)
             pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
         end
 
+        cleanup_launch(launch)
+        cleanup_launch_paths(current.id)
         error(string.format('Failed to start terminal %s', current.id))
     end
 
@@ -499,18 +696,24 @@ end
 ---@param id string
 function M.forget_exited_terminal(id)
     output_helper.forget_exited_terminal(id)
+    clear_action_strip_state(id)
 end
 
 ---@param id string
 ---@return terminalia.TerminalRecord?
 function M.release_exited_terminal(id)
-    return output_helper.release_exited_terminal(id)
+    local released = output_helper.release_exited_terminal(id)
+
+    clear_action_strip_state(id)
+
+    return released
 end
 
 ---Clear live output state for a terminal.
 ---@param id string
 function M.clear_output(id)
     output_helper.clear_output(id)
+    clear_action_strip_state(id)
 end
 
 ---Clear all live runtime output state.
@@ -545,6 +748,12 @@ function M.clear()
     for key in pairs(buffer_state) do
         buffer_state[key] = nil
     end
+    for key in pairs(action_strip_state) do
+        action_strip_state[key] = nil
+    end
+    for key in pairs(launch_cleanup_paths) do
+        cleanup_launch_paths(key)
+    end
     buffer_helper.cleanup_hidden_startup_window()
 end
 
@@ -554,10 +763,33 @@ function M._apply_cwd_fallback_chunks(terminal_id, data)
     apply_cwd_fallback_chunks(terminal_id, data)
 end
 
+---@param data string[]?
+---@return string[]?
+function M._strip_cwd_fallback_chunks(data)
+    return strip_cwd_fallback_chunks(data)
+end
+
 ---@param command string|string[]
 ---@return string|string[]
 function M._resolve_command_with_fallback(command)
     return with_shell_cwd_fallback(command)
+end
+
+---@param command string|string[]
+---@return terminalia.PreparedShellLaunch
+function M._resolve_launch(command)
+    return resolve_launch({
+        command = command,
+        cwd = vim.fn.getcwd(),
+        id = 'terminalia:test',
+        name = 'terminalia:test',
+        namespace = 'test',
+        context_id = 'context:host',
+        disposable = false,
+        status = 'registered',
+        preferred_view = 'split',
+        created_at = os.time(),
+    })
 end
 
 vim.api.nvim_create_autocmd({ 'BufHidden', 'BufWipeout', 'WinClosed' }, {
@@ -575,10 +807,14 @@ vim.api.nvim_create_autocmd({ 'BufHidden', 'BufWipeout', 'WinClosed' }, {
 
         for id, pending in pairs(pending_disposable_cleanup) do
             if pending == true then
-                output_helper.finalize_disposable(id, {
+                local finalized = output_helper.finalize_disposable(id, {
                     bufnr = bufnr,
                     event = event.event,
                 })
+
+                if finalized then
+                    clear_action_strip_state(id)
+                end
             end
         end
     end,

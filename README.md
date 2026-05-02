@@ -20,6 +20,14 @@ The current slice is intentionally small but usable:
 - restart exited terminals in place while preserving named lowercase marks
 - auto-prune disposable terminals after exit
 - list registered terminals with cwd metadata
+- plan and execute external editor file-open requests with `+cmd`, `--cmd`,
+  `-d` diff mode, stdin buffers, and tab/current/split/vsplit/float/reuse
+  open policies
+- handle Terminalia-owned terminal OSC open actions without rendering the action
+  markup into captured output
+- define session-local editor shell functions for supported Terminalia-owned
+  shells so `nvim file` and `$EDITOR file` open in the top-level Neovim
+  without PATH shims
 
 Deeper shell integration, picker layers, and adapter integrations are still planned work.
 
@@ -44,6 +52,7 @@ Example local `lazy.nvim` spec:
 - `:TerminaliaList [namespace] [cwd_prefix]`
 - `:TerminaliaHistory <id>`
 - `:TerminaliaOpenUri <uri> [view]`
+- `:TerminaliaExternalOpen [nvim-style-file-args...]`
 - `:TerminaliaOverseerCurrent`
 - `:TerminaliaOverseerUse <context_id>`
 - `:TerminaliaOverseerClear`
@@ -55,6 +64,57 @@ Examples:
 - `:TerminaliaOpen terminal:1 float`
 - `:TerminaliaList workspace /tmp/workspace`
 - `:TerminaliaHistory terminal:1`
+- `:TerminaliaExternalOpen +12 src/main.lua`
+- `:TerminaliaExternalOpen --cmd "set number" -d left.txt right.txt`
+
+## Terminal-Owned Open Actions
+
+Processes running inside Terminalia terminals may request file opens by emitting
+this private OSC sequence:
+
+```text
+ESC ] 777 ; terminalia ; open ; {"argv":["src/main.lua:12:1"]} BEL
+```
+
+The JSON payload accepts the same `argv`, `cwd`, `open_policy`, and `stdin_data`
+shape as `terminalia.api.open_external()`. If `cwd` is omitted, Terminalia uses
+the owning terminal record's current cwd. Terminalia's default handler rejects
+payloads that would execute editor commands through `+cmd` or `--cmd`.
+
+Provider plugins that own derived terminal contexts, such as Laboratory and
+Consulate, should not duplicate the protocol machinery. They can produce open
+actions through `terminalia.api.build_terminal_open_action()`, parse complete
+sequences through `terminalia.api.parse_terminal_action_sequence()`, or parse
+output streams through `terminalia.api.extract_terminal_action_chunks()`. That
+lets a provider add metadata or path translations, handle the action itself, or
+forward a modified payload into `terminalia.api.open_external()`. The
+stream-safe stripping helper is also public so providers can keep action markup
+out of their own captured output when they do not need the parsed actions.
+
+When a terminal belongs to a derived `TerminalContext`, its context provider may
+define `transform_terminal_action(context, action, terminal)`. Return a
+rewritten action to let Terminalia continue with default handling, return
+`false` when the provider handled the request itself, or return `nil` to keep
+the original action.
+
+Terminalia does not install a PATH shim or local wrapper for `nvim` here.
+Provider-owned contexts should decide how their local, remote, or container
+shells produce these sequences.
+
+For host-owned interactive `sh`, `bash`, and `zsh` terminals, Terminalia
+injects the producer side into only the shell session it launches. Terminalia
+starts the interactive shell with a transient Terminalia-owned startup file that
+loads the user's normal startup file first, then defines configured editor
+commands such as `nvim`, `vim`, and `vi` before the prompt and line editor own
+the terminal. It also exports `EDITOR` and `VISUAL` to a
+self-contained shell command that emits the same host-open action, so child
+tools that run `$EDITOR file` or `$VISUAL file` through a shell use the same
+path. It does not edit user rc/config files, add PATH entries, install helper
+executables, make the target shell read startup input from a pipe, or send the
+bootstrap as typed terminal input. Provider plugins can reuse the same snippet
+through
+`terminalia.api.build_terminal_open_shell_integration()` when they own a remote
+or container launch path.
 
 ## Lua API
 
@@ -108,6 +168,15 @@ Additional control helpers:
 - `terminalia.api.register_overseer_template(template)`
 - `terminalia.api.decode_uri(uri)`
 - `terminalia.api.open_uri(uri, opts)`
+- `terminalia.api.plan_external_open(argv, opts)`
+- `terminalia.api.open_external(argv, opts)`
+- `terminalia.api.build_terminal_open_action(payload)`
+- `terminalia.api.parse_terminal_action_sequence(sequence)`
+- `terminalia.api.parse_terminal_action(sequence)`
+- `terminalia.api.new_terminal_action_strip_state()`
+- `terminalia.api.strip_terminal_action_chunks(chunks, state)`
+- `terminalia.api.extract_terminal_action_chunks(chunks, state)`
+- `terminalia.api.build_terminal_open_shell_integration(opts)`
 - `terminalia.api.start(id)`
 - `terminalia.api.send(id, data)`
 - `terminalia.api.output_lines(id)`
