@@ -28,6 +28,9 @@ The current slice is intentionally small but usable:
 - define session-local editor shell functions for supported Terminalia-owned
   shells so `nvim file` and `$EDITOR file` open in the top-level Neovim
   without PATH shims
+- export a parent Neovim RPC socket to Terminalia-owned terminal jobs so a real
+  child `nvim file` process can redirect safe file-open invocations back to the
+  top-level editor and exit
 
 Deeper shell integration, picker layers, and adapter integrations are still planned work.
 
@@ -109,12 +112,38 @@ commands such as `nvim`, `vim`, and `vi` before the prompt and line editor own
 the terminal. It also exports `EDITOR` and `VISUAL` to a
 self-contained shell command that emits the same host-open action, so child
 tools that run `$EDITOR file` or `$VISUAL file` through a shell use the same
-path. It does not edit user rc/config files, add PATH entries, install helper
+path. These session-local editor commands preserve blocking editor semantics:
+the shell command waits until ordinary opened buffers are closed, and
+CodeDiff-backed Git tool invocations wait until CodeDiff emits
+`User CodeDiffClose` for the opened CodeDiff tabpage. It does not edit user rc/config files, add PATH entries, install helper
 executables, make the target shell read startup input from a pipe, or send the
 bootstrap as typed terminal input. Provider plugins can reuse the same snippet
 through
 `terminalia.api.build_terminal_open_shell_integration()` when they own a remote
 or container launch path.
+
+The same session-local hook also recognizes Git tool environment variables.
+When Git launches a difftool with `LOCAL` and `REMOTE`, Terminalia includes that
+metadata in the open action and, when `:CodeDiff` is available, opens
+`CodeDiff file <local> <remote>` in the host. When Git launches a mergetool with
+`MERGED`, Terminalia opens `CodeDiff merge <merged>`. If CodeDiff is not
+available, Terminalia falls back to native diff windows for difftool launches
+and a normal open of the merged file for mergetool launches. This behavior is
+controlled by `external_git_tool_backend = 'auto'|'codediff'|'native'`. Wait
+tokens are restricted to the transient startup directory for the
+Terminalia-owned shell that emitted the action. Native Git-tool fallback
+acknowledges immediately because Terminalia does not own a completion surface
+for that UI.
+
+As a fallback for descendant processes that launch a real child Neovim anyway,
+Terminalia-owned terminal jobs also receive `TERMINALIA_PARENT_NVIM`,
+`TERMINALIA_PARENT_KIND`, and `TERMINALIA_PARENT_OPEN_POLICY`. During
+`require('terminalia').setup()`, a child Neovim that sees those variables will
+connect to the parent RPC socket, ask the parent to open safe file targets
+through `terminalia.api.open_external()`, and then exit. Missing or stale
+sockets and non-file-open argv shapes fall back to normal child Neovim startup.
+This path does not use a daemon, proxy, wrapper, PATH shim, or persistent shell
+config.
 
 ## Lua API
 

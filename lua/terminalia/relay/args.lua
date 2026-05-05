@@ -127,17 +127,25 @@ function M.plan(argv, opts)
     local pending_line
     local pending_col
     local pending_pre_command = false
+    local pending_command = false
 
     for _, arg in ipairs(argv or {}) do
         if pending_pre_command then
             table.insert(plan.pre_commands, arg)
             pending_pre_command = false
+        elseif pending_command then
+            table.insert(plan.commands, arg)
+            pending_command = false
         elseif not literal_args and arg == '--' then
             literal_args = true
         elseif not literal_args and arg == '--cmd' then
             pending_pre_command = true
         elseif not literal_args and vim.startswith(arg, '--cmd=') then
             table.insert(plan.pre_commands, arg:sub(7))
+        elseif not literal_args and arg == '-c' then
+            pending_command = true
+        elseif not literal_args and vim.startswith(arg, '-c') and arg ~= '-c' then
+            table.insert(plan.commands, arg:sub(3))
         elseif not literal_args and (arg == '-d' or arg == '--diff') then
             plan.diff = true
         elseif not literal_args and vim.startswith(arg, '+') then

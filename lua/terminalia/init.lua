@@ -3,6 +3,7 @@ local api = require('terminalia.api')
 local commands = require('terminalia.commands')
 local contexts = require('terminalia.context.state')
 local persistence = require('terminalia.persistence')
+local parent_redirect = require('terminalia.relay.parent')
 local runtime = require('terminalia.runtime.native')
 
 ---@class terminalia.RootModule
@@ -71,6 +72,13 @@ commands.ensure(M)
 function M.setup(opts)
     local active_config = config.get()
     local next_config = config.preview(opts, active_config)
+
+    if parent_redirect.try_child_redirect({
+        enabled = next_config.enable_parent_nvim_redirect,
+    }) then
+        return M.config
+    end
+
     local current_persistence_config = persistence_config_snapshot(next_config)
     local state_file_changed = persistence_state_file_changed(last_persistence_config, current_persistence_config)
     local disabling_persistence = persistence_disabled(last_persistence_config, current_persistence_config)

@@ -24,6 +24,8 @@
 ---@field enable_editor_shell_integration boolean
 ---@field editor_shell_commands string[]
 ---@field external_open_policy terminalia.ExternalOpenPolicy
+---@field external_git_tool_backend 'auto'|'codediff'|'native'
+---@field enable_parent_nvim_redirect boolean
 
 local M = {}
 local valid_views = {
@@ -37,6 +39,11 @@ local valid_external_open_policies = {
     split = true,
     tab = true,
     vsplit = true,
+}
+local valid_external_git_tool_backends = {
+    auto = true,
+    codediff = true,
+    native = true,
 }
 local valid_split_directions = {
     aboveleft = true,
@@ -71,6 +78,8 @@ local defaults = {
     enable_editor_shell_integration = true,
     editor_shell_commands = { 'nvim', 'vim', 'vi' },
     external_open_policy = 'tab',
+    external_git_tool_backend = 'auto',
+    enable_parent_nvim_redirect = true,
 }
 
 ---@type terminalia.Config
@@ -88,6 +97,9 @@ function M.normalize(user_opts, base_opts)
     end
     if not valid_external_open_policies[normalized.external_open_policy] then
         normalized.external_open_policy = defaults.external_open_policy
+    end
+    if not valid_external_git_tool_backends[normalized.external_git_tool_backend] then
+        normalized.external_git_tool_backend = defaults.external_git_tool_backend
     end
     normalized.split_direction = M.normalize_split_direction(normalized.split_direction)
 

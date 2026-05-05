@@ -84,6 +84,38 @@ function M.supports_shell(command)
     return executable == 'sh' or executable == 'bash' or executable == 'zsh'
 end
 
+---@return string[]
+local function git_tool_metadata_lines()
+    return {
+        [[__terminalia_git_tool=]],
+        [[if [ -n "${MERGED:-}" ]; then __terminalia_merged=$(__terminalia_json_escape "$MERGED")]],
+        [[__terminalia_git_tool=1]],
+        [[__terminalia_json="$__terminalia_json,\"git_tool\":{\"kind\":\"mergetool\",\"merged\":\"$__terminalia_merged\""]],
+        [[if [ -n "${LOCAL:-}" ]; then __terminalia_local=$(__terminalia_json_escape "$LOCAL"); __terminalia_json="$__terminalia_json,\"local\":\"$__terminalia_local\""; fi]],
+        [[if [ -n "${REMOTE:-}" ]; then __terminalia_remote=$(__terminalia_json_escape "$REMOTE"); __terminalia_json="$__terminalia_json,\"remote\":\"$__terminalia_remote\""; fi]],
+        [[if [ -n "${BASE:-}" ]; then __terminalia_base=$(__terminalia_json_escape "$BASE"); __terminalia_json="$__terminalia_json,\"base\":\"$__terminalia_base\""; fi]],
+        [[__terminalia_json="$__terminalia_json}"]],
+        [[elif [ -n "${LOCAL:-}" ] && [ -n "${REMOTE:-}" ]; then __terminalia_local=$(__terminalia_json_escape "$LOCAL")]],
+        [[__terminalia_git_tool=1]],
+        [[__terminalia_remote=$(__terminalia_json_escape "$REMOTE")]],
+        [[__terminalia_json="$__terminalia_json,\"git_tool\":{\"kind\":\"difftool\",\"local\":\"$__terminalia_local\",\"remote\":\"$__terminalia_remote\"}"]],
+        [[fi]],
+    }
+end
+
+---@return string[]
+local function wait_metadata_lines()
+    return {
+        [[__terminalia_wait_path=]],
+        [[if [ -n "${TERMINALIA_ACTION_WAIT_DIR:-}" ]; then mkdir -p "$TERMINALIA_ACTION_WAIT_DIR" 2>/dev/null || true]],
+        [[__terminalia_wait_seq=$((${__terminalia_wait_seq:-0} + 1))]],
+        [[__terminalia_wait_path="$TERMINALIA_ACTION_WAIT_DIR/$$.$__terminalia_wait_seq"]],
+        [[__terminalia_wait_escaped=$(__terminalia_json_escape "$__terminalia_wait_path")]],
+        [[__terminalia_json="$__terminalia_json,\"wait\":{\"kind\":\"file\",\"path\":\"$__terminalia_wait_escaped\"}"]],
+        [[fi]],
+    }
+end
+
 ---@param opts? terminalia.ShellIntegrationOptions
 ---@return string[]
 local function open_action_lines(opts)
@@ -111,8 +143,15 @@ local function open_action_lines(opts)
         )
     end
 
+    vim.list_extend(emit_parts, git_tool_metadata_lines())
+    vim.list_extend(emit_parts, wait_metadata_lines())
+
     table.insert(emit_parts, [[__terminalia_json="$__terminalia_json}"]])
     table.insert(emit_parts, [[printf '\033]777;terminalia;open;%s\007' "$__terminalia_json"]])
+    table.insert(
+        emit_parts,
+        [[if [ -n "${__terminalia_wait_path:-}" ]; then while [ ! -f "$__terminalia_wait_path" ]; do sleep 0.05; done; __terminalia_wait_status=$(cat "$__terminalia_wait_path" 2>/dev/null); rm -f "$__terminalia_wait_path"; [ "$__terminalia_wait_status" = ok ]; fi]]
+    )
     table.insert(emit_parts, '}')
 
     return {
@@ -184,6 +223,8 @@ local function create_startup_dir()
         error(string.format('Failed to create Terminalia shell startup directory: %s', err))
     end
 
+    vim.fn.mkdir(vim.fs.joinpath(dir, 'actions'), 'p')
+
     return dir
 end
 
@@ -195,6 +236,15 @@ local function write_startup_file(path, lines)
     if not ok then
         error(string.format('Failed to write Terminalia shell startup file %s: %s', path, err))
     end
+end
+
+---@param dir string
+---@return string
+local function action_wait_export_line(dir)
+    return string.format(
+        'TERMINALIA_ACTION_WAIT_DIR=%s; export TERMINALIA_ACTION_WAIT_DIR',
+        shell_quote(vim.fs.joinpath(dir, 'actions'))
+    )
 end
 
 ---@param shell string
@@ -209,6 +259,7 @@ local function sh_startup_launch(shell, prelude, env)
 
     write_startup_file(startup_file, {
         [[if [ -n "${TERMINALIA_ORIGINAL_ENV:-}" ] && [ -r "$TERMINALIA_ORIGINAL_ENV" ]; then . "$TERMINALIA_ORIGINAL_ENV"; fi]],
+        action_wait_export_line(dir),
         prelude,
         [[unset TERMINALIA_ORIGINAL_ENV]],
     })
@@ -230,6 +281,7 @@ local function bash_startup_launch(shell, prelude, env)
 
     write_startup_file(startup_file, {
         [[if [ -r "${HOME:-}/.bashrc" ]; then . "${HOME:-}/.bashrc"; fi]],
+        action_wait_export_line(dir),
         prelude,
     })
 
@@ -265,6 +317,7 @@ local function zsh_startup_launch(shell, prelude, env)
     write_startup_file(vim.fs.joinpath(dir, '.zshrc'), {
         [[if [ -n "${TERMINALIA_USER_ZDOTDIR:-}" ]; then ZDOTDIR="$TERMINALIA_USER_ZDOTDIR"; fi]],
         [[if [ -n "${ZDOTDIR:-}" ] && [ -r "$ZDOTDIR/.zshrc" ]; then . "$ZDOTDIR/.zshrc"; fi]],
+        action_wait_export_line(dir),
         prelude,
         [[unset TERMINALIA_BOOTSTRAP_ZDOTDIR TERMINALIA_ORIGINAL_ZDOTDIR TERMINALIA_USER_ZDOTDIR]],
     })

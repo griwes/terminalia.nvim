@@ -11,13 +11,37 @@ describe('terminalia external open handling', function()
         return dir
     end
 
+    local function capture_codediff()
+        pcall(vim.api.nvim_del_user_command, 'CodeDiff')
+
+        local calls = {}
+
+        vim.api.nvim_create_user_command('CodeDiff', function(opts)
+            table.insert(calls, vim.deepcopy(opts.fargs))
+        end, {
+            nargs = '*',
+        })
+
+        return calls
+    end
+
+    local function terminal_visible_output(plugin, terminal_id)
+        local record = assert(plugin.api.get(terminal_id))
+        local terminal_screen = table.concat(vim.api.nvim_buf_get_lines(assert(record.bufnr), 0, -1, false), '\n')
+        local captured = plugin.api.output(terminal_id).output
+
+        return terminal_screen .. '\n' .. captured
+    end
+
     before_each(function()
         local plugin = require('terminalia')
+        pcall(vim.api.nvim_del_user_command, 'CodeDiff')
         history_dir = vim.fn.tempname()
         state_file = vim.fn.tempname()
         workspace = mkdtemp('terminalia-relay')
 
         plugin.setup({
+            external_git_tool_backend = 'auto',
             external_open_policy = 'tab',
             history_dir = history_dir,
             notify_on_exit = false,
@@ -27,6 +51,10 @@ describe('terminalia external open handling', function()
         plugin.api.clear()
         vim.cmd('silent! %bwipeout!')
         vim.cmd('enew')
+    end)
+
+    after_each(function()
+        pcall(vim.api.nvim_del_user_command, 'CodeDiff')
     end)
 
     it('plans file, position, command, stdin, and passthrough arguments', function()
@@ -525,6 +553,248 @@ describe('terminalia external open handling', function()
         assert.are.equal(1, #notifications)
     end)
 
+    it('routes terminal-owned difftool actions through CodeDiff when available', function()
+        local plugin = require('terminalia')
+        local left = vim.fs.joinpath(workspace, 'left.txt')
+        local right = vim.fs.joinpath(workspace, 'right.txt')
+        vim.fn.writefile({ 'left' }, left)
+        vim.fn.writefile({ 'right' }, right)
+        local codediff_calls = capture_codediff()
+
+        local terminal = plugin.api.create({
+            cwd = workspace,
+            name = 'codediff action',
+        })
+        vim.b.terminalia_id = terminal.id
+
+        vim.api.nvim_exec_autocmds('TermRequest', {
+            buffer = 0,
+            data = {
+                sequence = plugin.api.build_terminal_open_action({
+                    argv = { '-d', 'left.txt', 'right.txt' },
+                    cwd = workspace,
+                    git_tool = {
+                        kind = 'difftool',
+                        ['local'] = 'left.txt',
+                        remote = 'right.txt',
+                    },
+                    open_policy = 'current',
+                }),
+            },
+        })
+
+        assert.is_true(vim.wait(1000, function()
+            return #codediff_calls == 1
+        end))
+        assert.are.same({ 'file', left, right }, codediff_calls[1])
+        assert.are.equal(1, #vim.api.nvim_tabpage_list_wins(0))
+    end)
+
+    it('rejects difftool actions with unrelated editor commands', function()
+        local plugin = require('terminalia')
+        local left = vim.fs.joinpath(workspace, 'unsafe-left.txt')
+        local right = vim.fs.joinpath(workspace, 'unsafe-right.txt')
+        vim.fn.writefile({ 'left' }, left)
+        vim.fn.writefile({ 'right' }, right)
+        local codediff_calls = capture_codediff()
+        local notifications = {}
+        local original_notify = vim.notify
+
+        local terminal = plugin.api.create({
+            cwd = workspace,
+            name = 'unsafe difftool action',
+        })
+        vim.b.terminalia_id = terminal.id
+        vim.g.terminalia_unsafe_difftool_command = nil
+        vim.notify = function(message)
+            table.insert(notifications, message)
+        end
+
+        vim.api.nvim_exec_autocmds('TermRequest', {
+            buffer = 0,
+            data = {
+                sequence = plugin.api.build_terminal_open_action({
+                    argv = {
+                        '-d',
+                        'unsafe-left.txt',
+                        'unsafe-right.txt',
+                        '+let g:terminalia_unsafe_difftool_command = 1',
+                    },
+                    cwd = workspace,
+                    git_tool = {
+                        kind = 'difftool',
+                        ['local'] = 'unsafe-left.txt',
+                        remote = 'unsafe-right.txt',
+                    },
+                    open_policy = 'current',
+                }),
+            },
+        })
+
+        vim.wait(100)
+        vim.notify = original_notify
+
+        assert.are.same({}, codediff_calls)
+        assert.is_nil(vim.g.terminalia_unsafe_difftool_command)
+        assert.are_not.equal(left, vim.api.nvim_buf_get_name(0))
+        assert.are.equal(1, #notifications)
+    end)
+
+    it('falls back to native diff windows for difftool actions without CodeDiff', function()
+        local plugin = require('terminalia')
+        local left = vim.fs.joinpath(workspace, 'left-native.txt')
+        local right = vim.fs.joinpath(workspace, 'right-native.txt')
+        vim.fn.writefile({ 'left' }, left)
+        vim.fn.writefile({ 'right' }, right)
+        pcall(vim.api.nvim_del_user_command, 'CodeDiff')
+
+        local terminal = plugin.api.create({
+            cwd = workspace,
+            name = 'native diff action',
+        })
+        vim.b.terminalia_id = terminal.id
+
+        vim.api.nvim_exec_autocmds('TermRequest', {
+            buffer = 0,
+            data = {
+                sequence = plugin.api.build_terminal_open_action({
+                    argv = { '-d', 'left-native.txt', 'right-native.txt' },
+                    cwd = workspace,
+                    git_tool = {
+                        kind = 'difftool',
+                        ['local'] = 'left-native.txt',
+                        remote = 'right-native.txt',
+                    },
+                    open_policy = 'current',
+                }),
+            },
+        })
+
+        assert.is_true(vim.wait(1000, function()
+            return #vim.api.nvim_tabpage_list_wins(0) == 2
+        end))
+
+        for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+            assert.is_true(vim.api.nvim_get_option_value('diff', { win = winid }))
+        end
+        assert.are.equal(right, vim.api.nvim_buf_get_name(0))
+    end)
+
+    it('honors the native git tool backend even when CodeDiff is available', function()
+        local plugin = require('terminalia')
+        local left = vim.fs.joinpath(workspace, 'left-forced-native.txt')
+        local right = vim.fs.joinpath(workspace, 'right-forced-native.txt')
+        vim.fn.writefile({ 'left' }, left)
+        vim.fn.writefile({ 'right' }, right)
+        local codediff_calls = capture_codediff()
+        plugin.setup({
+            external_git_tool_backend = 'native',
+        })
+
+        local terminal = plugin.api.create({
+            cwd = workspace,
+            name = 'forced native diff action',
+        })
+        vim.b.terminalia_id = terminal.id
+
+        vim.api.nvim_exec_autocmds('TermRequest', {
+            buffer = 0,
+            data = {
+                sequence = plugin.api.build_terminal_open_action({
+                    argv = { '-d', 'left-forced-native.txt', 'right-forced-native.txt' },
+                    cwd = workspace,
+                    git_tool = {
+                        kind = 'difftool',
+                        ['local'] = 'left-forced-native.txt',
+                        remote = 'right-forced-native.txt',
+                    },
+                    open_policy = 'current',
+                }),
+            },
+        })
+
+        assert.is_true(vim.wait(1000, function()
+            return #vim.api.nvim_tabpage_list_wins(0) == 2
+        end))
+
+        assert.are.same({}, codediff_calls)
+        for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+            assert.is_true(vim.api.nvim_get_option_value('diff', { win = winid }))
+        end
+        assert.are.equal(right, vim.api.nvim_buf_get_name(0))
+    end)
+
+    it('routes terminal-owned mergetool actions through safe CodeDiff merge commands', function()
+        local plugin = require('terminalia')
+        local merged = vim.fs.joinpath(workspace, 'merged.txt')
+        vim.fn.writefile({ '<<<<<<< HEAD', 'ours', '=======', 'theirs', '>>>>>>> branch' }, merged)
+        local codediff_calls = capture_codediff()
+        vim.g.terminalia_mergetool_unsafe_command = nil
+
+        local terminal = plugin.api.create({
+            cwd = workspace,
+            name = 'mergetool action',
+        })
+        vim.b.terminalia_id = terminal.id
+
+        vim.api.nvim_exec_autocmds('TermRequest', {
+            buffer = 0,
+            data = {
+                sequence = plugin.api.build_terminal_open_action({
+                    argv = { 'merged.txt', '-c', 'CodeDiff merge "merged.txt"' },
+                    cwd = workspace,
+                    git_tool = {
+                        kind = 'mergetool',
+                        merged = 'merged.txt',
+                        ['local'] = 'merged.LOCAL.txt',
+                        remote = 'merged.REMOTE.txt',
+                        base = 'merged.BASE.txt',
+                    },
+                    open_policy = 'current',
+                }),
+            },
+        })
+
+        assert.is_true(vim.wait(1000, function()
+            return #codediff_calls == 1
+        end))
+        assert.are.same({ 'merge', merged }, codediff_calls[1])
+        assert.is_nil(vim.g.terminalia_mergetool_unsafe_command)
+    end)
+
+    it('opens the merged file for mergetool actions when CodeDiff is unavailable', function()
+        local plugin = require('terminalia')
+        local merged = vim.fs.joinpath(workspace, 'merged-native.txt')
+        vim.fn.writefile({ 'merged' }, merged)
+        pcall(vim.api.nvim_del_user_command, 'CodeDiff')
+
+        local terminal = plugin.api.create({
+            cwd = workspace,
+            name = 'native mergetool action',
+        })
+        vim.b.terminalia_id = terminal.id
+
+        vim.api.nvim_exec_autocmds('TermRequest', {
+            buffer = 0,
+            data = {
+                sequence = plugin.api.build_terminal_open_action({
+                    argv = { 'merged-native.txt', '-c', 'CodeDiff merge "merged-native.txt"' },
+                    cwd = workspace,
+                    git_tool = {
+                        kind = 'mergetool',
+                        merged = 'merged-native.txt',
+                    },
+                    open_policy = 'current',
+                }),
+            },
+        })
+
+        assert.is_true(vim.wait(1000, function()
+            return vim.api.nvim_buf_get_name(0) == merged
+        end))
+        assert.are.equal(1, #vim.api.nvim_tabpage_list_wins(0))
+    end)
+
     it('clears pending OSC strip state when terminal ids are reused', function()
         local plugin = require('terminalia')
         plugin.setup({
@@ -579,13 +849,172 @@ describe('terminalia external open handling', function()
         assert.truthy(startup:find('export EDITOR=', 1, true))
         assert.truthy(startup:find('export VISUAL=', 1, true))
         assert.truthy(startup:find('terminalia-editor', 1, true))
+        assert.truthy(startup:find('TERMINALIA_ACTION_WAIT_DIR=', 1, true))
         assert.is_nil(startup:find('\027', 1, true))
         assert.is_nil(startup:find('\007', 1, true))
         assert.truthy(startup:find([[\033]777;terminalia;open;]], 1, true))
         assert.truthy(startup:find([[\007]], 1, true))
+        assert.truthy(startup:find('git_tool', 1, true))
+        assert.truthy(startup:find('wait', 1, true))
+        assert.truthy(startup:find('__terminalia_wait_path', 1, true))
+        assert.truthy(startup:find('${MERGED:-}', 1, true))
+        assert.truthy(startup:find('${LOCAL:-}', 1, true))
+        assert.truthy(startup:find('${REMOTE:-}', 1, true))
 
         for _, path in ipairs(launch.cleanup_paths or {}) do
             vim.fn.delete(path, 'rf')
+        end
+    end)
+
+    it('injects parent nvim redirect environment for Terminalia-owned descendants', function()
+        local parent_redirect = require('terminalia.relay.parent')
+        local env = parent_redirect.extend_child_env({}, {
+            address = '/tmp/terminalia-parent.sock',
+            open_policy = 'split',
+        })
+
+        assert.are.equal('/tmp/terminalia-parent.sock', env.TERMINALIA_PARENT_NVIM)
+        assert.are.equal('terminalia', env.TERMINALIA_PARENT_KIND)
+        assert.are.equal('split', env.TERMINALIA_PARENT_OPEN_POLICY)
+        assert.is_nil(env.PATH)
+    end)
+
+    it('requests parent nvim external opens for safe child editor argv', function()
+        local parent_redirect = require('terminalia.relay.parent')
+        local requested_payload
+        local closed_channel
+        local did_quit = false
+
+        local redirected = parent_redirect.try_child_redirect({
+            argv = { 'child.lua:4:2' },
+            cwd = workspace,
+            env = {
+                TERMINALIA_PARENT_NVIM = '/tmp/terminalia-parent.sock',
+                TERMINALIA_PARENT_KIND = 'terminalia',
+                TERMINALIA_PARENT_OPEN_POLICY = 'tab',
+            },
+            quit = function()
+                did_quit = true
+            end,
+            transport = {
+                connect = function(address)
+                    assert.are.equal('/tmp/terminalia-parent.sock', address)
+                    return 9
+                end,
+                request = function(channel, payload)
+                    assert.are.equal(9, channel)
+                    requested_payload = vim.deepcopy(payload)
+                    return {
+                        ok = true,
+                        opened = 1,
+                    }
+                end,
+                close = function(channel)
+                    closed_channel = channel
+                end,
+            },
+        })
+
+        assert.is_true(redirected)
+        assert.is_true(did_quit)
+        assert.are.equal(9, closed_channel)
+        assert.are.same({ 'child.lua:4:2' }, requested_payload.argv)
+        assert.are.equal(workspace, requested_payload.cwd)
+        assert.are.equal('tab', requested_payload.open_policy)
+    end)
+
+    it('falls back when the parent nvim socket is unavailable', function()
+        local parent_redirect = require('terminalia.relay.parent')
+
+        local redirected = parent_redirect.try_child_redirect({
+            argv = { 'child.lua' },
+            cwd = workspace,
+            env = {
+                TERMINALIA_PARENT_NVIM = '/tmp/missing-terminalia-parent.sock',
+                TERMINALIA_PARENT_KIND = 'terminalia',
+            },
+            quit = function()
+                error('stale parent redirect must not quit')
+            end,
+            transport = {
+                connect = function()
+                    return 0
+                end,
+                request = function()
+                    error('request should not be attempted')
+                end,
+            },
+        })
+
+        assert.is_false(redirected)
+    end)
+
+    it('lets child setup options disable parent nvim redirects', function()
+        local parent_redirect = require('terminalia.relay.parent')
+
+        local redirected = parent_redirect.try_child_redirect({
+            argv = { 'child.lua' },
+            cwd = workspace,
+            enabled = false,
+            env = {
+                TERMINALIA_PARENT_NVIM = '/tmp/terminalia-parent.sock',
+                TERMINALIA_PARENT_KIND = 'terminalia',
+            },
+            quit = function()
+                error('disabled parent redirect must not quit')
+            end,
+            transport = {
+                connect = function()
+                    error('disabled parent redirect must not connect')
+                end,
+                request = function()
+                    error('request should not be attempted')
+                end,
+            },
+        })
+
+        assert.is_false(redirected)
+    end)
+
+    it('falls back for child nvim invocations that are not safe file opens', function()
+        local parent_redirect = require('terminalia.relay.parent')
+        local unsafe_argvs = {
+            {},
+            { '--headless', 'child.lua' },
+            { '--embed' },
+            { '--remote-ui' },
+            { '--server', '/tmp/nvim.sock', '--remote', 'child.lua' },
+            { '-u', 'NONE', 'child.lua' },
+            { '--cmd', 'set number', 'child.lua' },
+            { '+set number', 'child.lua' },
+            { '--clean', 'child.lua' },
+            { '-d', 'left.lua', 'right.lua' },
+            { '--diff', 'left.lua', 'right.lua' },
+            { '-' },
+        }
+
+        for _, argv in ipairs(unsafe_argvs) do
+            local redirected = parent_redirect.try_child_redirect({
+                argv = argv,
+                cwd = workspace,
+                env = {
+                    TERMINALIA_PARENT_NVIM = '/tmp/terminalia-parent.sock',
+                    TERMINALIA_PARENT_KIND = 'terminalia',
+                },
+                quit = function()
+                    error(string.format('unsafe argv redirected: %s', vim.inspect(argv)))
+                end,
+                transport = {
+                    connect = function()
+                        error(string.format('unsafe argv opened socket: %s', vim.inspect(argv)))
+                    end,
+                    request = function()
+                        error('request should not be attempted')
+                    end,
+                },
+            })
+
+            assert.is_false(redirected)
         end
     end)
 
@@ -625,6 +1054,83 @@ describe('terminalia external open handling', function()
 
         assert.are.equal(path, vim.api.nvim_buf_get_name(0))
         assert.are.same({ 2, 0 }, vim.api.nvim_win_get_cursor(0))
+    end)
+
+    it('blocks nvim commands typed into an integrated shell until the host buffer closes', function()
+        local plugin = require('terminalia')
+        local path = vim.fs.joinpath(workspace, 'typed-blocking.lua')
+        vim.fn.writefile({ 'one', 'two', 'three' }, path)
+        plugin.setup({
+            external_open_policy = 'current',
+            persist_history = false,
+        })
+
+        local terminal = plugin.api.create({
+            command = { 'sh' },
+            cwd = workspace,
+            name = 'integrated blocking shell',
+        })
+
+        plugin.api.start(terminal.id)
+        vim.wait(200)
+        plugin.api.send(terminal.id, 'nvim typed-blocking.lua; printf AFTER; printf _TYPED_OPEN\n')
+
+        assert.is_true(vim.wait(2000, function()
+            return vim.api.nvim_buf_get_name(0) == path
+        end))
+
+        vim.wait(200)
+        assert.is_nil(terminal_visible_output(plugin, terminal.id):find('AFTER_TYPED_OPEN', 1, true))
+
+        vim.cmd('bdelete! ' .. vim.fn.bufnr(path))
+
+        assert.is_true(vim.wait(2000, function()
+            return terminal_visible_output(plugin, terminal.id):find('AFTER_TYPED_OPEN', 1, true) ~= nil
+        end))
+
+        plugin.api.kill(terminal.id)
+    end)
+
+    it('rejects wait files that escape the Terminalia action directory through a symlink', function()
+        local plugin = require('terminalia')
+        local path = vim.fs.joinpath(workspace, 'escape-target.lua')
+        local outside = vim.fs.joinpath(workspace, 'outside-wait-dir')
+        local escaped = vim.fs.joinpath(outside, 'escaped-token')
+        vim.fn.writefile({ 'one' }, path)
+        vim.fn.mkdir(outside, 'p')
+        plugin.setup({
+            external_open_policy = 'current',
+            persist_history = false,
+        })
+
+        local terminal = plugin.api.create({
+            command = { 'sh' },
+            cwd = workspace,
+            name = 'wait escape shell',
+        })
+
+        plugin.api.start(terminal.id)
+        vim.wait(200)
+        plugin.api.send(terminal.id, table.concat({
+            'for dir in "${TERMINALIA_ACTION_WAIT_DIR%/actions}" /tmp/missing; do [ -d "$dir" ] && break; done',
+            'mkdir -p "$TERMINALIA_ACTION_WAIT_DIR"',
+            'ln -s ' .. vim.fn.shellescape(outside) .. ' "$dir/actions-link"',
+            [[printf '\033]777;terminalia;open;{"argv":["escape-target.lua"],"wait":{"kind":"file","path":"%s"}}\007' "$dir/actions-link/123.1"]],
+        }, '; ') .. '\n')
+
+        assert.is_true(vim.wait(2000, function()
+            return vim.api.nvim_buf_get_name(0) == path
+        end))
+
+        vim.wait(200)
+        assert.are.equal(0, vim.fn.filereadable(escaped))
+
+        vim.cmd('bdelete! ' .. vim.fn.bufnr(path))
+        vim.wait(200)
+
+        assert.are.equal(0, vim.fn.filereadable(escaped))
+
+        plugin.api.kill(terminal.id)
     end)
 
     it('opens files from default vim-compatible commands typed into an integrated Terminalia shell', function()
@@ -724,6 +1230,149 @@ describe('terminalia external open handling', function()
 
         assert.are.equal(path, vim.api.nvim_buf_get_name(0))
         assert.are.same({ 3, 0 }, vim.api.nvim_win_get_cursor(0))
+    end)
+
+    it('blocks EDITOR launches until the host buffer closes', function()
+        local plugin = require('terminalia')
+        local path = vim.fs.joinpath(workspace, 'editor-blocking.lua')
+        vim.fn.writefile({ 'one', 'two', 'three' }, path)
+        plugin.setup({
+            external_open_policy = 'current',
+            persist_history = false,
+        })
+
+        local terminal = plugin.api.create({
+            command = { 'sh' },
+            cwd = workspace,
+            name = 'editor blocking shell',
+        })
+
+        plugin.api.start(terminal.id)
+        vim.wait(200)
+        plugin.api.send(
+            terminal.id,
+            [[sh -c "$EDITOR \"\$@\"" terminalia-tool editor-blocking.lua; printf AFTER; printf _EDITOR_OPEN]] .. '\n'
+        )
+
+        assert.is_true(vim.wait(2000, function()
+            return vim.api.nvim_buf_get_name(0) == path
+        end))
+
+        vim.wait(200)
+        assert.is_nil(terminal_visible_output(plugin, terminal.id):find('AFTER_EDITOR_OPEN', 1, true))
+
+        vim.cmd('bdelete! ' .. vim.fn.bufnr(path))
+
+        assert.is_true(vim.wait(2000, function()
+            return terminal_visible_output(plugin, terminal.id):find('AFTER_EDITOR_OPEN', 1, true) ~= nil
+        end))
+
+        plugin.api.kill(terminal.id)
+    end)
+
+    it('opens difftool launches from EDITOR in a child process of an integrated Terminalia shell', function()
+        local plugin = require('terminalia')
+        local left = vim.fs.joinpath(workspace, 'editor-left.txt')
+        local right = vim.fs.joinpath(workspace, 'editor-right.txt')
+        vim.fn.writefile({ 'left' }, left)
+        vim.fn.writefile({ 'right' }, right)
+        local codediff_calls = capture_codediff()
+        plugin.setup({
+            external_open_policy = 'current',
+            persist_history = false,
+        })
+
+        local terminal = plugin.api.create({
+            command = { 'sh' },
+            cwd = workspace,
+            name = 'editor difftool shell',
+        })
+
+        plugin.api.start(terminal.id)
+        vim.wait(200)
+        plugin.api.send(
+            terminal.id,
+            [[LOCAL=editor-left.txt REMOTE=editor-right.txt sh -c "$EDITOR \"\$@\"" terminalia-tool editor-left.txt editor-right.txt]]
+                .. '\n'
+        )
+
+        assert.is_true(vim.wait(2000, function()
+            return #codediff_calls == 1
+        end))
+
+        plugin.api.kill(terminal.id)
+
+        assert.are.same({ 'file', left, right }, codediff_calls[1])
+    end)
+
+    it('blocks Git mergetool EDITOR launches until the host CodeDiff session closes', function()
+        local plugin = require('terminalia')
+        local merged = vim.fs.joinpath(workspace, 'editor-merged.txt')
+        local left = vim.fs.joinpath(workspace, 'editor-merged.LOCAL.txt')
+        local right = vim.fs.joinpath(workspace, 'editor-merged.REMOTE.txt')
+        local base = vim.fs.joinpath(workspace, 'editor-merged.BASE.txt')
+        vim.fn.writefile({ '<<<<<<< HEAD', 'ours', '=======', 'theirs', '>>>>>>> branch' }, merged)
+        vim.fn.writefile({ 'left' }, left)
+        vim.fn.writefile({ 'right' }, right)
+        vim.fn.writefile({ 'base' }, base)
+        local codediff_calls = capture_codediff()
+        plugin.setup({
+            external_open_policy = 'current',
+            persist_history = false,
+        })
+
+        local terminal = plugin.api.create({
+            command = { 'sh' },
+            cwd = workspace,
+            name = 'editor mergetool shell',
+        })
+
+        plugin.api.start(terminal.id)
+        vim.wait(200)
+        plugin.api.send(terminal.id, table.concat({
+            'MERGED=editor-merged.txt',
+            'LOCAL=editor-merged.LOCAL.txt',
+            'REMOTE=editor-merged.REMOTE.txt',
+            'BASE=editor-merged.BASE.txt',
+            [[sh -c "$EDITOR \"\$@\"" terminalia-tool editor-merged.txt -c "CodeDiff merge \"editor-merged.txt\""]],
+            [[; printf AFTER; printf _MERGE]],
+        }, ' ') .. '\n')
+
+        assert.is_true(vim.wait(2000, function()
+            return #codediff_calls == 1
+        end))
+        assert.are.same({ 'merge', merged }, codediff_calls[1])
+
+        vim.wait(200)
+        assert.is_nil(terminal_visible_output(plugin, terminal.id):find('AFTER_MERGE', 1, true))
+
+        vim.api.nvim_exec_autocmds('User', {
+            pattern = 'CodeDiffClose',
+        })
+
+        vim.wait(200)
+        assert.is_nil(terminal_visible_output(plugin, terminal.id):find('AFTER_MERGE', 1, true))
+
+        vim.api.nvim_exec_autocmds('User', {
+            pattern = 'CodeDiffClose',
+            data = {},
+        })
+
+        vim.wait(200)
+        assert.is_nil(terminal_visible_output(plugin, terminal.id):find('AFTER_MERGE', 1, true))
+
+        vim.api.nvim_exec_autocmds('User', {
+            pattern = 'CodeDiffClose',
+            data = {
+                tabpage = vim.api.nvim_get_current_tabpage(),
+            },
+        })
+
+        assert.is_true(vim.wait(2000, function()
+            return terminal_visible_output(plugin, terminal.id):find('AFTER_MERGE', 1, true) ~= nil
+        end))
+
+        plugin.api.kill(terminal.id)
     end)
 
     it('opens files from VISUAL in a child process of an integrated Terminalia shell', function()

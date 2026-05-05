@@ -4,10 +4,12 @@ local contexts = require('terminalia.context.state')
 local history = require('terminalia.history')
 local buffer_helpers = require('terminalia.runtime.buffer')
 local action_protocol = require('terminalia.terminal.action_protocol')
+local parent_redirect = require('terminalia.relay.parent')
 local registry = require('terminalia.terminal.registry')
 local shell_integration = require('terminalia.terminal.shell_integration')
 local output_helpers = require('terminalia.runtime.output')
 local uri = require('terminalia.uri')
+local git_tool_relay = require('terminalia.relay.git_tool')
 
 local M = {}
 local autocmds_registered = false
@@ -32,10 +34,137 @@ local visible_windows_for_buffer
 local action_strip_state = {}
 ---@type table<string, string[]>
 local launch_cleanup_paths = {}
+---@type table<string, string[]>
+local launch_action_wait_dirs = {}
 
 local disposable_cleanup_group = vim.api.nvim_create_augroup('terminalia-disposable-cleanup', {
     clear = true,
 })
+
+---@param path string
+---@return boolean
+local function regular_directory(path)
+    local stat = vim.uv.fs_lstat(path)
+    return type(stat) == 'table' and stat.type == 'directory'
+end
+
+---@param wait_path string
+---@param action_dir string
+---@return string?
+local function wait_token_path(wait_path, action_dir)
+    local normalized_path = vim.fs.normalize(wait_path)
+    local normalized_dir = vim.fs.normalize(action_dir)
+
+    if vim.fs.dirname(normalized_path) ~= normalized_dir then
+        return nil
+    end
+
+    local basename = vim.fs.basename(normalized_path)
+
+    if basename == nil or basename:match('^[0-9]+%.[0-9]+$') == nil then
+        return nil
+    end
+
+    if not regular_directory(normalized_dir) then
+        return nil
+    end
+
+    return vim.fs.joinpath(normalized_dir, basename)
+end
+
+---@param terminal terminalia.TerminalRecord
+---@param payload table
+---@param status 'ok'|'error'
+local function complete_terminal_action_wait(terminal, payload, status)
+    if type(payload.wait) ~= 'table' or payload.wait.kind ~= 'file' or type(payload.wait.path) ~= 'string' then
+        return
+    end
+
+    local paths = launch_action_wait_dirs[terminal.id]
+
+    if type(paths) ~= 'table' then
+        return
+    end
+
+    for _, path in ipairs(paths) do
+        local safe_path = type(path) == 'string' and path ~= '' and wait_token_path(payload.wait.path, path)
+
+        if safe_path ~= nil then
+            local fd = vim.uv.fs_open(safe_path, 'wx', 384)
+
+            if fd == nil then
+                return
+            end
+
+            pcall(vim.uv.fs_write, fd, status .. '\n', -1)
+            pcall(vim.uv.fs_close, fd)
+            return
+        end
+    end
+end
+
+---@param targets terminalia.ExternalOpenTarget[]
+---@return integer[]
+local function target_buffers(targets)
+    local bufnrs = {}
+    local seen = {}
+
+    for _, target in ipairs(targets or {}) do
+        local bufnr
+
+        if type(target.path) == 'string' and target.path ~= '' then
+            bufnr = vim.fn.bufnr(target.path)
+        elseif target.stdin then
+            bufnr = vim.api.nvim_get_current_buf()
+        end
+
+        if type(bufnr) == 'number' and bufnr > 0 and not seen[bufnr] and vim.api.nvim_buf_is_valid(bufnr) then
+            seen[bufnr] = true
+            table.insert(bufnrs, bufnr)
+        end
+    end
+
+    return bufnrs
+end
+
+---@param targets terminalia.ExternalOpenTarget[]
+---@param complete fun(status: 'ok'|'error')
+local function complete_when_targets_close(targets, complete)
+    local bufnrs = target_buffers(targets)
+
+    if #bufnrs == 0 then
+        complete('ok')
+        return
+    end
+
+    local group = vim.api.nvim_create_augroup('terminalia-action-wait-' .. vim.uv.hrtime(), {
+        clear = true,
+    })
+
+    local function check_done()
+        for _, bufnr in ipairs(bufnrs) do
+            if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr) then
+                return
+            end
+        end
+
+        pcall(vim.api.nvim_del_augroup_by_id, group)
+        complete('ok')
+    end
+
+    for _, bufnr in ipairs(bufnrs) do
+        vim.api.nvim_create_autocmd({ 'BufDelete', 'BufUnload', 'BufWipeout' }, {
+            group = group,
+            buffer = bufnr,
+            desc = 'Complete Terminalia editor wait token when opened target closes',
+            callback = function()
+                vim.schedule(check_done)
+            end,
+        })
+    end
+
+    check_done()
+end
 
 ---@return table<string, string>
 local function current_environment()
@@ -228,6 +357,18 @@ local function open_terminalia_action(terminal, action)
     payload.cwd = payload.cwd or terminal.cwd
 
     vim.schedule(function()
+        local wait_completed = false
+        local has_wait = type(payload.wait) == 'table'
+
+        local function complete_wait(status)
+            if wait_completed then
+                return
+            end
+
+            wait_completed = true
+            complete_terminal_action_wait(terminal, payload, status)
+        end
+
         local ok, err = pcall(function()
             local api = require('terminalia.api')
             local plan = api.plan_external_open(payload.argv or {}, {
@@ -235,16 +376,30 @@ local function open_terminalia_action(terminal, action)
                 open_policy = payload.open_policy,
             })
 
+            if
+                git_tool_relay.try_open(plan, payload, {
+                    stdin_data = payload.stdin_data,
+                    on_complete = has_wait and complete_wait or nil,
+                })
+            then
+                return
+            end
+
             if #(plan.pre_commands or {}) > 0 or #(plan.commands or {}) > 0 then
                 error('Terminalia terminal actions cannot execute editor commands')
             end
 
-            require('terminalia.relay.open').open_plan(plan, {
+            local opened_targets = require('terminalia.relay.open').open_plan(plan, {
                 stdin_data = payload.stdin_data,
             })
+
+            if has_wait then
+                complete_when_targets_close(opened_targets, complete_wait)
+            end
         end)
 
         if not ok then
+            complete_wait('error')
             vim.notify(string.format('Terminalia terminal action failed: %s', err), vim.log.levels.ERROR)
         end
     end)
@@ -305,6 +460,7 @@ end
 ---@param terminal_id string
 local function cleanup_launch_paths(terminal_id)
     local paths = launch_cleanup_paths[terminal_id]
+    launch_action_wait_dirs[terminal_id] = nil
 
     if type(paths) ~= 'table' then
         return
@@ -384,6 +540,9 @@ local function resolve_launch(terminal)
     })
 
     prepared.command = with_shell_cwd_fallback(prepared.command)
+    prepared.env = parent_redirect.extend_child_env(prepared.env, {
+        open_policy = cfg.external_open_policy,
+    })
     prepared.env = nil_if_empty_env(prepared.env)
 
     return prepared
@@ -465,8 +624,12 @@ function M.ensure_started(terminal)
 
         if type(launch.cleanup_paths) == 'table' then
             launch_cleanup_paths[start_terminal.id] = vim.deepcopy(launch.cleanup_paths)
+            launch_action_wait_dirs[start_terminal.id] = vim.tbl_map(function(path)
+                return vim.fs.joinpath(path, 'actions')
+            end, launch.cleanup_paths)
         else
             launch_cleanup_paths[start_terminal.id] = nil
+            launch_action_wait_dirs[start_terminal.id] = nil
         end
 
         local started_job_id = vim.fn.termopen(launch.command, {
