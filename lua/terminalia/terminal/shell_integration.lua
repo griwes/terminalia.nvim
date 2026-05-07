@@ -217,7 +217,10 @@ end
 
 ---@return string
 local function create_startup_dir()
-    local dir, err = vim.uv.fs_mkdtemp(string.format('%s/terminalia-shell.XXXXXX', vim.fn.stdpath('run')))
+    local run_dir = vim.fn.stdpath('run')
+    vim.fn.mkdir(run_dir, 'p')
+
+    local dir, err = vim.uv.fs_mkdtemp(string.format('%s/terminalia-shell.XXXXXX', run_dir))
 
     if dir == nil then
         error(string.format('Failed to create Terminalia shell startup directory: %s', err))
