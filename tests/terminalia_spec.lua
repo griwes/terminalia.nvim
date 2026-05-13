@@ -79,7 +79,7 @@ describe('terminalia', function()
         assert.is_function(observed.contributor.capture)
         assert.is_function(observed.contributor.plan_restore)
         assert.is_function(observed.contributor.restore)
-        assert.are.equal('after_mksession', observed.contributor.restore_phase)
+        assert.are.equal('after_layout', observed.contributor.restore_phase)
         assert.are.same({ 'arboretum', 'consulate', 'laboratory' }, observed.contributor.restore_after)
     end)
 

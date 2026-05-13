@@ -126,7 +126,7 @@ function M.setup(opts)
                 capture = api.session_capture,
                 plan_restore = api.session_plan_restore,
                 restore = api.session_restore,
-                restore_phase = 'after_mksession',
+                restore_phase = 'after_layout',
                 restore_after = { 'arboretum', 'consulate', 'laboratory' },
             })
         end
