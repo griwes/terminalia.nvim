@@ -110,21 +110,6 @@ function M.is_string_id(id)
     return type(id) == 'string' and id ~= ''
 end
 
----@param id any
----@param fallback_index? integer
----@return string
-function M.normalize_restored_id(id, fallback_index)
-    if M.is_valid_id(id) then
-        return id
-    end
-
-    if type(fallback_index) == 'number' and fallback_index > 1 then
-        return string.format('restored_terminal:%d', fallback_index)
-    end
-
-    return 'restored_terminal'
-end
-
 ---@param value any
 ---@return terminalia.TerminalStatus
 local function normalize_status(value)
@@ -188,15 +173,7 @@ end
 ---@param opts terminalia.CreateOptions
 ---@return terminalia.TerminalRecord
 function M.restore_terminal(opts)
-    assert(M.is_string_id(opts.id), string.format('Invalid terminal id: %s', vim.inspect(opts.id)))
-
-    local restored_id = M.normalize_restored_id(opts.id, opts.restored_index)
-    local terminal = M.new_terminal(vim.tbl_extend('force', opts, {
-        id = restored_id,
-    }))
-
-    terminal.id = restored_id
-    terminal.name = opts.name or 'restored_terminal'
+    local terminal = M.new_terminal(opts)
 
     terminal.preferred_view = config.normalize_view(opts.view)
 

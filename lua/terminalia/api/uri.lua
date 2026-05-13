@@ -28,8 +28,9 @@ end
 
 ---@param terminal terminalia.TerminalRecord
 ---@param view terminalia.ViewKind
-local function reveal(terminal, view)
-    return openers[view](terminal, config.get())
+---@param opts? { start_insert?: boolean }
+local function reveal(terminal, view, opts)
+    return openers[view](terminal, config.get(), opts)
 end
 
 ---@param api table
@@ -41,7 +42,7 @@ end
 
 ---@param api table
 ---@param uri_value string
----@param opts? { view?: terminalia.ViewKind }
+---@param opts? { view?: terminalia.ViewKind, start_insert?: boolean }
 ---@return integer|terminalia.TerminalRecord
 function M.open_uri(api, uri_value, opts)
     local decoded, err = uri.decode(uri_value)
@@ -71,14 +72,14 @@ end
 
 ---@param api table
 ---@param id string
----@param opts? { view?: terminalia.ViewKind }
+---@param opts? { view?: terminalia.ViewKind, start_insert?: boolean }
 ---@return terminalia.TerminalRecord
 function M.open_terminal(api, id, opts)
     local terminal = assert(api.get(id), string.format('Unknown terminal id: %s', id))
     local view = resolve_view(terminal, opts)
 
     api.start(id)
-    reveal(terminal, view)
+    reveal(terminal, view, opts)
 
     return api.update(id, {
         last_opened_at = os.time(),

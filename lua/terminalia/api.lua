@@ -3,6 +3,7 @@ local context_api = require('terminalia.api.context')
 local uri_api = require('terminalia.api.uri')
 local history = require('terminalia.history')
 local ministry_integration = require('terminalia.integrations.ministry')
+local persistence = require('terminalia.persistence')
 local relay_args = require('terminalia.relay.args')
 local relay_open = require('terminalia.relay.open')
 local terminal_action_protocol = require('terminalia.terminal.action_protocol')
@@ -180,7 +181,7 @@ end
 
 ---Open a Terminalia URI through the normal terminal/history surfaces.
 ---@param uri_value string
----@param opts? { view?: terminalia.ViewKind }
+---@param opts? { view?: terminalia.ViewKind, start_insert?: boolean }
 ---@return integer|terminalia.TerminalRecord
 function M.open_uri(uri_value, opts)
     return uri_api.open_uri(M, uri_value, opts)
@@ -281,7 +282,7 @@ end
 
 ---Reveal an existing terminal and start the runtime if necessary.
 ---@param id string
----@param opts? { view?: terminalia.ViewKind }
+---@param opts? { view?: terminalia.ViewKind, start_insert?: boolean }
 ---@return terminalia.TerminalRecord
 function M.open(id, opts)
     return uri_api.open_terminal(M, id, opts)
@@ -294,65 +295,106 @@ function M.list(filters)
     return registry.list(filters)
 end
 
+---@param bufnr integer?
+---@return boolean
+local function terminal_buffer_is_session_state(bufnr)
+    return bufnr ~= nil and vim.api.nvim_buf_is_valid(bufnr)
+end
+
 ---@return table
 function M.session_capture()
-    local terminals = {}
+    local terminal_ids = {}
 
     for _, terminal in ipairs(M.list()) do
-        table.insert(terminals, {
-            id = terminal.id,
-            name = terminal.name,
-            namespace = terminal.namespace,
-            cwd = terminal.cwd,
-            context_id = terminal.context_id,
-            preferred_view = terminal.preferred_view,
-            disposable = terminal.disposable,
-            status = terminal.status,
-            uri = uri.encode_terminal_uri(terminal),
-        })
+        if terminal_buffer_is_session_state(terminal.bufnr) then
+            table.insert(terminal_ids, terminal.id)
+        end
     end
 
     return {
+        version = 1,
+        state_ref = {
+            kind = 'terminalia.persistence',
+            state_file = config.get().state_file,
+        },
         current_context_id = M.current_context().id,
-        terminals = terminals,
+        terminal_ids = terminal_ids,
     }
+end
+
+---@param terminal table
+---@return table
+local function terminal_restore_item(terminal)
+    return {
+        id = terminal.id,
+        uri = terminal.uri or uri.encode_terminal_uri(terminal),
+        name = terminal.name,
+        namespace = terminal.namespace,
+        cwd = terminal.cwd,
+        context_id = terminal.context_id,
+        preferred_view = terminal.preferred_view,
+        disposable = terminal.disposable,
+        status = terminal.status,
+    }
+end
+
+---@param captured table
+---@param id string
+---@return table?
+local function terminal_from_reference(captured, id)
+    local existing = M.get(id)
+    if existing ~= nil then
+        return existing
+    end
+
+    local ref = type(captured.state_ref) == 'table' and captured.state_ref or {}
+    if ref.kind ~= 'terminalia.persistence' or type(ref.state_file) ~= 'string' then
+        return nil
+    end
+
+    local payload = persistence.load({
+        state_file = ref.state_file,
+    })
+
+    for _, terminal in ipairs(payload.terminals or {}) do
+        if terminal.id == id then
+            return terminal
+        end
+    end
+
+    return nil
 end
 
 ---Build restore-plan steps for captured Terminalia session state.
 ---@param captured table
 ---@return continuity.RestorePlanStep[]
 function M.session_plan_restore(captured)
-    local terminals = type(captured) == 'table' and type(captured.terminals) == 'table' and captured.terminals or {}
+    ---@type table[]
+    local terminals = {}
 
-    if #terminals > 0 then
-        local items = {}
-
-        for _, terminal in ipairs(terminals) do
-            if type(terminal.uri) == 'string' and terminal.uri ~= '' then
-                table.insert(items, {
-                    id = terminal.id,
-                    uri = terminal.uri,
-                    name = terminal.name,
-                    namespace = terminal.namespace,
-                    preferred_view = terminal.preferred_view,
-                    disposable = terminal.disposable,
-                })
+    if type(captured) == 'table' and captured.version == 1 and type(captured.terminal_ids) == 'table' then
+        for _, id in ipairs(captured.terminal_ids) do
+            if type(id) == 'string' then
+                local terminal = terminal_from_reference(captured, id)
+                if terminal ~= nil then
+                    table.insert(terminals, terminal_restore_item(terminal))
+                end
             end
         end
+    end
 
-        if #items > 0 then
-            return {
-                {
-                    kind = 'terminalia.reopen_terminals',
-                    title = 'Reopen terminal buffers',
-                    detail = string.format('Reopen %d Terminalia terminal(s) from canonical URIs', #items),
-                    payload = {
-                        current_context_id = captured.current_context_id,
-                        terminals = items,
-                    },
+    if #terminals > 0 then
+        return {
+            {
+                kind = 'terminalia.restore_terminal_buffers',
+                title = 'Restore terminal buffer state',
+                detail = string.format('Restore %d Terminalia terminal buffer record(s)', #terminals),
+                payload = {
+                    current_context_id = captured.current_context_id,
+                    terminals = terminals,
                 },
-            }
-        end
+            },
+        }
     end
 
     if
@@ -376,24 +418,49 @@ function M.session_plan_restore(captured)
     return {}
 end
 
+---@param terminal table
+---@return terminalia.TerminalRecord?
+local function ensure_restored_terminal_record(terminal)
+    if type(terminal) ~= 'table' or type(terminal.id) ~= 'string' or terminal.id == '' then
+        return nil
+    end
+
+    local existing = M.get(terminal.id)
+
+    if existing ~= nil then
+        return existing
+    end
+
+    return registry.create({
+        id = terminal.id,
+        name = terminal.name,
+        namespace = terminal.namespace,
+        cwd = terminal.cwd,
+        context_id = terminal.context_id,
+        disposable = terminal.disposable,
+        status = terminal.status == 'running' and 'registered' or terminal.status,
+        view = terminal.preferred_view,
+    })
+end
+
 ---@param step continuity.RestorePlanStep
 function M.session_restore(step)
-    if step.kind ~= 'terminalia.reopen_terminals' then
+    if step.kind ~= 'terminalia.restore_terminal_buffers' and step.kind ~= 'terminalia.reopen_terminals' then
         error(string.format('Unsupported Terminalia restore step: %s', step.kind))
     end
 
-    local reopened = {}
+    local payload = type(step.payload) == 'table' and step.payload or {}
+    local restored = {}
 
-    for _, terminal in ipairs(step.payload.terminals or {}) do
-        table.insert(
-            reopened,
-            M.open_uri(terminal.uri, {
-                view = terminal.preferred_view,
-            })
-        )
+    for _, terminal in ipairs(payload.terminals or {}) do
+        local record = ensure_restored_terminal_record(terminal)
+
+        if record ~= nil then
+            table.insert(restored, record)
+        end
     end
 
-    return reopened
+    return restored
 end
 
 ---Update the tracked cwd metadata for a terminal.

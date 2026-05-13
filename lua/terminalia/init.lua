@@ -56,9 +56,7 @@ local function persistence_disabled(left, right)
 end
 
 local function clear_persistence_file(path)
-    if vim.fn.filereadable(path) == 1 then
-        vim.fn.delete(path)
-    end
+    persistence.clear_path(path)
 end
 
 M.config = config.get()

@@ -32,7 +32,92 @@ describe('terminalia', function()
         return ok, err, notifications
     end
 
+    ---@param path string
+    ---@return table
+    local function read_json(path)
+        return vim.json.decode(table.concat(vim.fn.readfile(path), '\n'))
+    end
+
+    ---@param value string
+    ---@return string
+    local function encode_path_component(value)
+        return value:gsub('[^%w._-]', function(char)
+            return string.format('%%%02X', char:byte())
+        end)
+    end
+
+    ---@param id string
+    ---@return string
+    local function record_filename(id)
+        return string.format('%s.json', encode_path_component(id))
+    end
+
+    ---@param path string
+    ---@param payload table
+    local function write_json(path, payload)
+        vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
+        vim.fn.writefile({ vim.json.encode(payload) }, path)
+    end
+
+    ---@param terminal table
+    ---@return table
+    local function terminal_index_entry(terminal)
+        return {
+            id = terminal.id,
+            name = terminal.name,
+            namespace = terminal.namespace,
+            cwd = terminal.cwd,
+            context_id = terminal.context_id,
+            status = terminal.status,
+            file = record_filename(terminal.id),
+        }
+    end
+
+    ---@param context table
+    ---@return table
+    local function context_index_entry(context)
+        return {
+            id = context.id,
+            kind = context.kind,
+            label = context.label,
+            parent_id = context.parent_id,
+            file = record_filename(context.id),
+        }
+    end
+
+    ---@param path string
+    ---@param payload table
+    local function write_persisted_terminal_state(path, payload)
+        local root = string.format('%s.d', path)
+        local terminals = vim.tbl_filter(function(terminal)
+            return type(terminal) == 'table' and type(terminal.id) == 'string'
+        end, payload.terminals or {})
+        local contexts = vim.tbl_filter(function(context)
+            return type(context) == 'table' and type(context.id) == 'string'
+        end, payload.contexts or {})
+
+        for _, terminal in ipairs(terminals) do
+            write_json(vim.fs.joinpath(root, 'terminals', record_filename(terminal.id)), terminal)
+        end
+
+        for _, context in ipairs(contexts) do
+            write_json(vim.fs.joinpath(root, 'contexts', record_filename(context.id)), context)
+        end
+
+        write_json(path, {
+            version = 1,
+            next_id = payload.next_id,
+            next_context_id = payload.next_context_id,
+            current_context_id = payload.current_context_id,
+            terminals = vim.tbl_map(terminal_index_entry, terminals),
+            contexts = vim.tbl_map(context_index_entry, contexts),
+        })
+    end
+
     before_each(function()
+        pcall(vim.cmd, 'silent! tabonly')
+        pcall(vim.cmd, 'silent! only')
+
         history_dir = vim.fn.tempname()
         state_file = vim.fn.tempname()
 
@@ -83,7 +168,7 @@ describe('terminalia', function()
         assert.are.same({ 'arboretum', 'consulate', 'laboratory' }, observed.contributor.restore_after)
     end)
 
-    it('captures Terminalia logical state for session contributors', function()
+    it('captures Terminalia buffers for session contributors without requiring a visible window', function()
         local plugin = require('terminalia')
         local context = plugin.api.create_child_context(plugin.api.host_context().id, {
             kind = 'fixture',
@@ -92,25 +177,57 @@ describe('terminalia', function()
 
         plugin.api.set_current_context(context.id)
 
-        local terminal = plugin.api.create({
+        local cwd = vim.fn.tempname()
+        vim.fn.mkdir(cwd, 'p')
+        local terminal = plugin.api.create_and_open({
             name = 'build',
+            namespace = 'workspace',
+            cwd = cwd,
+            command = { 'sh', '-lc', 'printf ready' },
+        })
+        local terminal_buffer = assert(terminal.bufnr)
+        local scratch = vim.api.nvim_create_buf(true, false)
+
+        vim.api.nvim_win_set_buf(0, scratch)
+
+        local captured = plugin.api.session_capture()
+
+        assert.are.equal(0, #vim.fn.win_findbuf(terminal_buffer))
+        assert.are.equal(context.id, captured.current_context_id)
+        assert.are.equal(1, captured.version)
+        assert.are.equal(state_file, captured.state_ref.state_file)
+        assert.are.equal(1, #captured.terminal_ids)
+        assert.are.equal(terminal.id, captured.terminal_ids[1])
+        assert.is_nil(captured.terminals)
+
+        local steps = plugin.api.session_plan_restore(captured)
+        assert.are.equal(cwd, steps[1].payload.terminals[1].cwd)
+        assert.are.equal(context.id, steps[1].payload.terminals[1].context_id)
+        assert.is_true(vim.startswith(steps[1].payload.terminals[1].uri, 'terminalia://'))
+    end)
+
+    it('does not turn restored terminal metadata into Continuity restore payloads', function()
+        local plugin = require('terminalia')
+
+        plugin.api.create({
+            name = 'metadata-only',
             namespace = 'workspace',
             cwd = '/tmp/workspace',
         })
 
         local captured = plugin.api.session_capture()
+        local steps = plugin.api.session_plan_restore(captured)
 
-        assert.are.equal(context.id, captured.current_context_id)
-        assert.are.equal(1, #captured.terminals)
-        assert.are.equal(terminal.id, captured.terminals[1].id)
-        assert.are.equal(context.id, captured.terminals[1].context_id)
-        assert.is_true(vim.startswith(captured.terminals[1].uri, 'terminalia://'))
+        assert.are.equal(0, #captured.terminal_ids)
+        assert.are.equal(0, #steps)
     end)
 
-    it('builds restore-plan steps from captured terminal URIs', function()
+    it('builds restore-plan steps for terminal buffer records without window reopen semantics', function()
         local plugin = require('terminalia')
 
-        local steps = plugin.api.session_plan_restore({
+        write_persisted_terminal_state(state_file, {
+            next_id = 2,
+            next_context_id = 2,
             current_context_id = 'context:remote',
             terminals = {
                 {
@@ -118,39 +235,62 @@ describe('terminalia', function()
                     uri = 'terminalia://terminal/terminal:1',
                     name = 'build',
                     namespace = 'workspace',
+                    cwd = '/tmp/workspace',
+                    context_id = 'context:remote',
                     preferred_view = 'float',
                     disposable = false,
+                    status = 'running',
+                },
+            },
+            contexts = {
+                {
+                    id = 'context:remote',
+                    kind = 'fixture',
+                    label = 'remote',
+                    parent_id = 'context:host',
                 },
             },
         })
 
+        local steps = plugin.api.session_plan_restore({
+            version = 1,
+            current_context_id = 'context:remote',
+            state_ref = {
+                kind = 'terminalia.persistence',
+                state_file = state_file,
+            },
+            terminal_ids = { 'terminal:1' },
+        })
+
         assert.are.equal(1, #steps)
-        assert.are.equal('terminalia.reopen_terminals', steps[1].kind)
-        assert.are.equal('terminalia://terminal/terminal:1', steps[1].payload.terminals[1].uri)
+        assert.are.equal('terminalia.restore_terminal_buffers', steps[1].kind)
+        assert.is_true(vim.startswith(steps[1].payload.terminals[1].uri, 'terminalia://terminal/'))
+        assert.matches('terminal:1', steps[1].payload.terminals[1].uri, 1, true)
+        assert.are.equal('/tmp/workspace', steps[1].payload.terminals[1].cwd)
     end)
 
-    it('replays Terminalia session restore steps through canonical uris', function()
+    it('restores Terminalia session records without opening windows', function()
         local plugin = require('terminalia')
-        local opened = {}
         local original_open_uri = plugin.api.open_uri
 
         plugin.api.open_uri = function(uri, opts)
-            table.insert(opened, {
-                uri = uri,
-                opts = vim.deepcopy(opts),
-            })
-            return {
-                id = 'terminal:restored',
-            }
+            error(string.format('unexpected window open: %s %s', uri, vim.inspect(opts)))
         end
 
         local restored = plugin.api.session_restore({
-            kind = 'terminalia.reopen_terminals',
+            kind = 'terminalia.restore_terminal_buffers',
             payload = {
                 terminals = {
                     {
+                        id = 'terminal:1',
                         uri = 'terminalia://terminal/terminal:1',
+                        name = 'build',
+                        namespace = 'workspace',
+                        cwd = '/tmp/workspace',
+                        context_id = 'context:host',
                         preferred_view = 'float',
+                        disposable = false,
+                        status = 'running',
                     },
                 },
             },
@@ -158,10 +298,12 @@ describe('terminalia', function()
 
         plugin.api.open_uri = original_open_uri
 
-        assert.are.equal(1, #opened)
-        assert.are.equal('terminalia://terminal/terminal:1', opened[1].uri)
-        assert.are.equal('float', opened[1].opts.view)
-        assert.are.equal('terminal:restored', restored[1].id)
+        assert.are.equal(1, #restored)
+        assert.are.equal('terminal:1', restored[1].id)
+        assert.are.equal('build', restored[1].name)
+        assert.are.equal('/tmp/workspace', restored[1].cwd)
+        assert.are.equal('registered', restored[1].status)
+        assert.are.equal('float', restored[1].preferred_view)
     end)
 
     it('notifies continuity.nvim when Terminalia state changes', function()
@@ -320,127 +462,6 @@ describe('terminalia', function()
         assert.are.equal('build', terminals[1].name)
     end)
 
-    it('remaps restored legacy terminal ids to a safe id', function()
-        local plugin = require('terminalia')
-
-        vim.fn.writefile({
-            vim.json.encode({
-                next_id = 3,
-                terminals = {
-                    {
-                        id = 'legacy/id',
-                        name = 'legacy',
-                        namespace = 'default',
-                        disposable = false,
-                        cwd = '/tmp/legacy',
-                        status = 'registered',
-                        view = 'split',
-                        created_at = 1,
-                    },
-                },
-            }),
-        }, state_file)
-
-        plugin.setup({
-            history_dir = history_dir,
-            notify_on_exit = false,
-            persist_terminals = true,
-            state_file = state_file,
-        })
-
-        local restored = plugin.api.list()[1]
-        assert.is_truthy(restored)
-        assert.are.equal('restored_terminal', restored.id)
-        assert.are.equal('legacy', restored.name)
-        assert.are.equal('/tmp/legacy', restored.cwd)
-        assert.is_nil(plugin.api.get('legacy/id'))
-        assert.are.equal(1, #plugin.api.list())
-    end)
-
-    it('restores multiple legacy terminal ids with distinct safe ids', function()
-        local plugin = require('terminalia')
-
-        vim.fn.writefile({
-            vim.json.encode({
-                next_id = 3,
-                terminals = {
-                    {
-                        id = 'legacy/id',
-                        name = 'legacy-one',
-                        namespace = 'default',
-                        disposable = false,
-                        cwd = '/tmp/legacy-one',
-                        status = 'registered',
-                        view = 'split',
-                        created_at = 1,
-                    },
-                    {
-                        id = 'legacy?id',
-                        name = 'legacy-two',
-                        namespace = 'default',
-                        disposable = false,
-                        cwd = '/tmp/legacy-two',
-                        status = 'registered',
-                        view = 'split',
-                        created_at = 2,
-                    },
-                },
-            }),
-        }, state_file)
-
-        plugin.setup({
-            history_dir = history_dir,
-            notify_on_exit = false,
-            persist_terminals = true,
-            state_file = state_file,
-        })
-
-        local restored = plugin.api.list()
-        assert.are.equal(2, #restored)
-        assert.are.equal('restored_terminal', restored[1].id)
-        assert.are.equal('restored_terminal:2', restored[2].id)
-        assert.are.equal('legacy-one', restored[1].name)
-        assert.are.equal('legacy-two', restored[2].name)
-        assert.are.equal('/tmp/legacy-one', restored[1].cwd)
-        assert.are.equal('/tmp/legacy-two', restored[2].cwd)
-        assert.is_truthy(plugin.api.get('restored_terminal'))
-        assert.is_truthy(plugin.api.get('restored_terminal:2'))
-    end)
-
-    it('uses placeholder name for unnamed restored legacy terminals', function()
-        local plugin = require('terminalia')
-
-        vim.fn.writefile({
-            vim.json.encode({
-                next_id = 3,
-                terminals = {
-                    {
-                        id = 'legacy/id',
-                        namespace = 'default',
-                        disposable = false,
-                        cwd = '/tmp/legacy',
-                        status = 'registered',
-                        view = 'split',
-                        created_at = 1,
-                    },
-                },
-            }),
-        }, state_file)
-
-        plugin.setup({
-            history_dir = history_dir,
-            notify_on_exit = false,
-            persist_terminals = true,
-            state_file = state_file,
-        })
-
-        local restored = plugin.api.list()[1]
-        assert.is_truthy(restored)
-        assert.are.equal('restored_terminal', restored.id)
-        assert.are.equal('restored_terminal', restored.name)
-        assert.are.equal(1, #plugin.api.list())
-    end)
-
     it('restores persisted terminal metadata during setup without restarting jobs', function()
         local plugin = require('terminalia')
 
@@ -506,6 +527,40 @@ describe('terminalia', function()
         assert.are.equal('devcontainer', restored_context.kind)
         assert.are.equal('devcontainer:1', restored_context.metadata.devcontainer_id)
         assert.are.equal('context:devcontainer', restored_terminal.context_id)
+    end)
+
+    it('persists terminals and contexts as a compact index plus fragmented records', function()
+        local plugin = require('terminalia')
+
+        plugin.api.create_context({
+            id = 'context:remote',
+            kind = 'remote',
+            label = 'Remote',
+            parent_id = 'context:host',
+            metadata = {
+                host = 'devbox',
+            },
+        })
+        plugin.api.create({
+            name = 'build',
+            namespace = 'workspace',
+            context_id = 'context:remote',
+            env = {
+                KEEP = 'value',
+            },
+        })
+
+        local index = read_json(state_file)
+        local root = string.format('%s.d', state_file)
+        local terminal = read_json(vim.fs.joinpath(root, 'terminals', 'terminal%3A1.json'))
+        local context = read_json(vim.fs.joinpath(root, 'contexts', 'context%3Aremote.json'))
+
+        assert.are.equal(1, index.version)
+        assert.are.equal(1, #index.terminals)
+        assert.are.equal('terminal%3A1.json', index.terminals[1].file)
+        assert.is_nil(index.terminals[1].env)
+        assert.are.equal('value', terminal.env.KEEP)
+        assert.are.equal('devbox', context.metadata.host)
     end)
 
     it('reloads persisted terminals after clear resets setup persistence state', function()
@@ -697,10 +752,20 @@ describe('terminalia', function()
         local first_state_file = vim.fn.tempname()
         local second_state_file = vim.fn.tempname()
 
-        vim.fn.writefile(
-            { vim.json.encode({ terminals = { { id = 'terminal:1', name = 'stale' } } }) },
-            second_state_file
-        )
+        write_persisted_terminal_state(second_state_file, {
+            terminals = {
+                {
+                    id = 'terminal:1',
+                    name = 'stale',
+                    namespace = 'default',
+                    disposable = false,
+                    cwd = vim.fn.getcwd(),
+                    status = 'registered',
+                    view = 'split',
+                    created_at = 1,
+                },
+            },
+        })
 
         plugin.setup({
             history_dir = history_dir,
@@ -779,23 +844,21 @@ describe('terminalia', function()
         local bufnr = assert(plugin.api.get(terminal.id)).bufnr
         assert.is_true(vim.api.nvim_buf_is_valid(bufnr))
 
-        vim.fn.writefile({
-            vim.json.encode({
-                next_id = 2,
-                terminals = {
-                    {
-                        id = 'terminal:1',
-                        name = 'restored',
-                        namespace = 'default',
-                        disposable = false,
-                        cwd = vim.loop.cwd(),
-                        status = 'registered',
-                        view = 'split',
-                        created_at = 1,
-                    },
+        write_persisted_terminal_state(state_file, {
+            next_id = 2,
+            terminals = {
+                {
+                    id = 'terminal:1',
+                    name = 'restored',
+                    namespace = 'default',
+                    disposable = false,
+                    cwd = vim.loop.cwd(),
+                    status = 'registered',
+                    view = 'split',
+                    created_at = 1,
                 },
-            }),
-        }, state_file)
+            },
+        })
 
         plugin.api.restore({
             force = true,
@@ -1144,12 +1207,10 @@ describe('terminalia', function()
             },
         }
 
-        vim.fn.writefile({
-            vim.json.encode({
-                next_id = 99,
-                terminals = terminals,
-            }),
-        }, state_file)
+        write_persisted_terminal_state(state_file, {
+            next_id = 99,
+            terminals = terminals,
+        })
 
         plugin.setup({
             notify_on_exit = false,
@@ -1737,22 +1798,20 @@ describe('terminalia', function()
     it('formats missing terminal display fields safely when listing', function()
         local plugin = require('terminalia')
 
-        vim.fn.writefile({
-            vim.json.encode({
-                next_id = 2,
-                terminals = {
-                    {
-                        id = 'terminal:1',
-                        cwd = '/tmp/workspace',
-                        namespace = 'default',
-                        status = 'registered',
-                        view = 'split',
-                        disposable = false,
-                        created_at = os.time(),
-                    },
+        write_persisted_terminal_state(state_file, {
+            next_id = 2,
+            terminals = {
+                {
+                    id = 'terminal:1',
+                    cwd = '/tmp/workspace',
+                    namespace = 'default',
+                    status = 'registered',
+                    view = 'split',
+                    disposable = false,
+                    created_at = os.time(),
                 },
-            }),
-        }, state_file)
+            },
+        })
 
         plugin.api.clear({
             wipe_storage = false,
@@ -1765,7 +1824,7 @@ describe('terminalia', function()
         })
 
         assert.are.same({
-            'terminal:1  [default]  registered  /tmp/workspace  restored_terminal',
+            'terminal:1  [default]  registered  /tmp/workspace  terminal:1',
         }, plugin.api.list_lines())
     end)
 
@@ -2289,25 +2348,23 @@ describe('terminalia', function()
         local plugin = require('terminalia')
         local history = require('terminalia.history')
 
-        vim.fn.writefile({
-            vim.json.encode({
-                next_id = 2,
-                terminals = {
-                    {
-                        id = 'terminal:1',
-                        name = 'build',
-                        namespace = 'workspace',
-                        disposable = false,
-                        cwd = vim.fn.getcwd(),
-                        status = 'exited',
-                        command = { 'sh', '-lc', 'printf done' },
-                        view = 'bogus',
-                        created_at = 1,
-                        exit_code = 0,
-                    },
+        write_persisted_terminal_state(state_file, {
+            next_id = 2,
+            terminals = {
+                {
+                    id = 'terminal:1',
+                    name = 'build',
+                    namespace = 'workspace',
+                    disposable = false,
+                    cwd = vim.fn.getcwd(),
+                    status = 'exited',
+                    command = { 'sh', '-lc', 'printf done' },
+                    view = 'bogus',
+                    created_at = 1,
+                    exit_code = 0,
                 },
-            }),
-        }, state_file)
+            },
+        })
 
         history.append_chunks('terminal:1', { 'done', '' })
         history.flush('terminal:1')

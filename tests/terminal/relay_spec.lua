@@ -139,6 +139,48 @@ describe('terminalia external open handling', function()
         assert.are.same({ 2, 1 }, vim.api.nvim_win_get_cursor(0))
     end)
 
+    it('adopts tab-policy opens as Tabulature children when Tabulature is active', function()
+        local original_tabulature = package.loaded.tabulature
+        local original_tabulature_state = package.loaded['tabulature.state']
+        local adopted = {}
+
+        package.loaded['tabulature.state'] = nil
+        package.loaded.tabulature = {
+            current_tab_id = function()
+                return 'tabulature-parent'
+            end,
+            adopt_current_tabpage = function(opts)
+                adopted[#adopted + 1] = {
+                    parent_id = opts.parent_id,
+                    tabpage = vim.api.nvim_get_current_tabpage(),
+                }
+            end,
+        }
+
+        local ok, err = pcall(function()
+            local plugin = require('terminalia')
+            local path = vim.fs.joinpath(workspace, 'tabulature-child.lua')
+            vim.fn.writefile({ 'return true' }, path)
+
+            plugin.api.open_external({ 'tabulature-child.lua' }, {
+                cwd = workspace,
+                open_policy = 'tab',
+            })
+
+            assert.are.equal(path, vim.api.nvim_buf_get_name(0))
+            assert.are.equal(1, #adopted)
+            assert.are.equal('tabulature-parent', adopted[1].parent_id)
+            assert.are.equal(vim.api.nvim_get_current_tabpage(), adopted[1].tabpage)
+        end)
+
+        package.loaded.tabulature = original_tabulature
+        package.loaded['tabulature.state'] = original_tabulature_state
+
+        if not ok then
+            error(err)
+        end
+    end)
+
     it('opens directory targets through the external open path', function()
         local plugin = require('terminalia')
         local directory = vim.fs.joinpath(workspace, 'project-dir')
@@ -182,7 +224,7 @@ describe('terminalia external open handling', function()
         local wins = vim.api.nvim_tabpage_list_wins(0)
         assert.are.equal(2, #wins)
         for _, winid in ipairs(wins) do
-            assert.is_true(vim.api.nvim_get_option_value('diff', { win = winid }))
+            assert.is_true(vim.wo[winid].diff)
         end
         assert.are.equal(right, vim.api.nvim_buf_get_name(0))
     end)
@@ -678,7 +720,7 @@ describe('terminalia external open handling', function()
         end))
 
         for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-            assert.is_true(vim.api.nvim_get_option_value('diff', { win = winid }))
+            assert.is_true(vim.wo[winid].diff)
         end
         assert.are.equal(right, vim.api.nvim_buf_get_name(0))
     end)
@@ -722,7 +764,7 @@ describe('terminalia external open handling', function()
 
         assert.are.same({}, codediff_calls)
         for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-            assert.is_true(vim.api.nvim_get_option_value('diff', { win = winid }))
+            assert.is_true(vim.wo[winid].diff)
         end
         assert.are.equal(right, vim.api.nvim_buf_get_name(0))
     end)
@@ -1089,6 +1131,41 @@ describe('terminalia external open handling', function()
 
         assert.is_true(vim.wait(2000, function()
             return terminal_visible_output(plugin, terminal.id):find('AFTER_TYPED_OPEN', 1, true) ~= nil
+        end))
+
+        plugin.api.kill(terminal.id)
+    end)
+
+    it('unblocks nvim commands typed into an integrated shell when the opened window closes', function()
+        local plugin = require('terminalia')
+        local path = vim.fs.joinpath(workspace, 'typed-window-close.lua')
+        vim.fn.writefile({ 'one', 'two', 'three' }, path)
+        plugin.setup({
+            external_open_policy = 'tab',
+            persist_history = false,
+        })
+
+        local terminal = plugin.api.create({
+            command = { 'sh' },
+            cwd = workspace,
+            name = 'integrated window-close shell',
+        })
+
+        plugin.api.start(terminal.id)
+        vim.wait(200)
+        plugin.api.send(terminal.id, 'nvim typed-window-close.lua; printf AFTER; printf _WINDOW_CLOSE\n')
+
+        assert.is_true(vim.wait(2000, function()
+            return vim.api.nvim_buf_get_name(0) == path
+        end))
+
+        vim.wait(200)
+        assert.is_nil(terminal_visible_output(plugin, terminal.id):find('AFTER_WINDOW_CLOSE', 1, true))
+
+        vim.cmd('quit')
+
+        assert.is_true(vim.wait(2000, function()
+            return terminal_visible_output(plugin, terminal.id):find('AFTER_WINDOW_CLOSE', 1, true) ~= nil
         end))
 
         plugin.api.kill(terminal.id)

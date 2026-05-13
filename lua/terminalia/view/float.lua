@@ -10,8 +10,9 @@ end
 ---Reveal a terminal in a floating window.
 ---@param terminal terminalia.TerminalRecord
 ---@param cfg terminalia.Config
+---@param opts? { start_insert?: boolean }
 ---@return integer
-function M.open(terminal, cfg)
+function M.open(terminal, cfg, opts)
     local float_cfg = cfg.float
     local bufnr = assert(terminal.bufnr, 'terminal buffer missing')
     local width = scaled_size(float_cfg.width, vim.o.columns)
@@ -29,7 +30,9 @@ function M.open(terminal, cfg)
         border = float_cfg.border,
     })
 
-    vim.cmd('startinsert')
+    if opts == nil or opts.start_insert ~= false then
+        vim.cmd('startinsert')
+    end
 
     return winid
 end

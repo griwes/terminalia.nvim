@@ -34,6 +34,15 @@ The current slice is intentionally small but usable:
 
 Deeper shell integration, picker layers, and adapter integrations are still planned work.
 
+## Storage
+
+Terminalia keeps `state_file` as a compact registry index and stores full
+terminal/context records as separate JSON files under `state_file .. '.d'`.
+Terminal output history remains separately owned by `history_dir`, one file per
+terminal. Continuity captures only Terminalia record ids and a pointer to this
+authoritative state file, rather than duplicating terminal registry payloads in
+session records.
+
 ## Installation
 
 Example local `lazy.nvim` spec:

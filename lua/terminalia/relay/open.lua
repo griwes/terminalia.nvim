@@ -21,6 +21,49 @@ local function edit_with(command, path)
     vim.cmd(string.format('%s %s', command, vim.fn.fnameescape(path)))
 end
 
+---@return table?
+local function active_tabulature()
+    if package.loaded['tabulature'] == nil and package.loaded['tabulature.state'] == nil then
+        return nil
+    end
+
+    local ok, tabulature = pcall(require, 'tabulature')
+    if not ok or type(tabulature) ~= 'table' then
+        return nil
+    end
+
+    return tabulature
+end
+
+---@return any?
+local function current_tabulature_tab_id()
+    local tabulature = active_tabulature()
+    if tabulature == nil or type(tabulature.current_tab_id) ~= 'function' then
+        return nil
+    end
+
+    local ok, tab_id = pcall(tabulature.current_tab_id)
+    if not ok then
+        return nil
+    end
+
+    return tab_id
+end
+
+---@param parent_id any?
+local function adopt_tabulature_child(parent_id)
+    if parent_id == nil then
+        return
+    end
+
+    local tabulature = active_tabulature()
+    if tabulature == nil or type(tabulature.adopt_current_tabpage) ~= 'function' then
+        return
+    end
+
+    pcall(tabulature.adopt_current_tabpage, { parent_id = parent_id })
+end
+
 ---@param path string
 ---@return boolean
 local function focus_existing_window(path)
@@ -79,7 +122,9 @@ local function open_file(target, policy)
     local path = assert(target.path, 'external open target missing path')
 
     if policy == 'tab' then
+        local tabulature_parent = current_tabulature_tab_id()
         edit_with('tabedit', path)
+        adopt_tabulature_child(tabulature_parent)
     elseif policy == 'split' then
         edit_with('split', path)
     elseif policy == 'vsplit' then

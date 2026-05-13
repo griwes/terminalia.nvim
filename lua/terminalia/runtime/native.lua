@@ -127,6 +127,24 @@ local function target_buffers(targets)
     return bufnrs
 end
 
+---@param bufnr integer
+---@return boolean
+local function buffer_visible(bufnr)
+    if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
+        return false
+    end
+
+    for _, tabpage in ipairs(vim.api.nvim_list_tabpages()) do
+        for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+            if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == bufnr then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
 ---@param targets terminalia.ExternalOpenTarget[]
 ---@param complete fun(status: 'ok'|'error')
 local function complete_when_targets_close(targets, complete)
@@ -143,7 +161,7 @@ local function complete_when_targets_close(targets, complete)
 
     local function check_done()
         for _, bufnr in ipairs(bufnrs) do
-            if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr) then
+            if buffer_visible(bufnr) then
                 return
             end
         end
@@ -153,7 +171,7 @@ local function complete_when_targets_close(targets, complete)
     end
 
     for _, bufnr in ipairs(bufnrs) do
-        vim.api.nvim_create_autocmd({ 'BufDelete', 'BufUnload', 'BufWipeout' }, {
+        vim.api.nvim_create_autocmd({ 'BufDelete', 'BufUnload', 'BufWipeout', 'BufWinLeave' }, {
             group = group,
             buffer = bufnr,
             desc = 'Complete Terminalia editor wait token when opened target closes',
