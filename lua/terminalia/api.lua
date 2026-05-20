@@ -187,6 +187,14 @@ function M.open_uri(uri_value, opts)
     return uri_api.open_uri(M, uri_value, opts)
 end
 
+---Adopt a `terminalia://...` buffer opened by a session manager or `:edit`.
+---@param bufnr integer
+---@param opts? table
+---@return terminalia.TerminalRecord|integer|nil
+function M.adopt_uri_buffer(bufnr, opts)
+    return uri_api.adopt_uri_buffer(M, bufnr, opts)
+end
+
 ---Build an external-editor open plan from argv-style arguments.
 ---@param argv string[]
 ---@param opts? { cwd?: string, open_policy?: terminalia.ExternalOpenPolicy }
@@ -331,6 +339,8 @@ local function terminal_restore_item(terminal)
         name = terminal.name,
         namespace = terminal.namespace,
         cwd = terminal.cwd,
+        env = terminal.env,
+        command = terminal.command,
         context_id = terminal.context_id,
         preferred_view = terminal.preferred_view,
         disposable = terminal.disposable,
@@ -436,11 +446,67 @@ local function ensure_restored_terminal_record(terminal)
         name = terminal.name,
         namespace = terminal.namespace,
         cwd = terminal.cwd,
+        env = terminal.env,
+        command = terminal.command,
         context_id = terminal.context_id,
         disposable = terminal.disposable,
         status = terminal.status == 'running' and 'registered' or terminal.status,
         view = terminal.preferred_view,
     })
+end
+
+---@param name string?
+---@return integer?
+local function find_buffer_by_exact_name(name)
+    if type(name) ~= 'string' or name == '' then
+        return nil
+    end
+
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) == name then
+            return bufnr
+        end
+    end
+end
+
+---@param bufnr integer
+---@return boolean
+local function buffer_is_visible(bufnr)
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+        if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
+            return true
+        end
+    end
+
+    return false
+end
+
+---@param record terminalia.TerminalRecord
+---@param terminal table
+---@return terminalia.TerminalRecord
+local function adopt_restored_terminal_buffer(record, terminal)
+    local terminal_uri = terminal.uri or uri.encode_terminal_uri(record)
+    local bufnr = find_buffer_by_exact_name(terminal_uri)
+
+    if bufnr == nil then
+        return record
+    end
+
+    vim.b[bufnr].terminalia_id = record.id
+    record = registry.update(record.id, {
+        bufnr = bufnr,
+    })
+    require('terminalia.winbar').install(bufnr)
+
+    if buffer_is_visible(bufnr) and not (record.status == 'running' and record.job_id ~= nil) then
+        local ok, started = pcall(M.start, record.id)
+
+        if ok and started ~= nil then
+            record = started
+        end
+    end
+
+    return record
 end
 
 ---@param step continuity.RestorePlanStep
@@ -456,6 +522,7 @@ function M.session_restore(step)
         local record = ensure_restored_terminal_record(terminal)
 
         if record ~= nil then
+            record = adopt_restored_terminal_buffer(record, terminal)
             table.insert(restored, record)
         end
     end

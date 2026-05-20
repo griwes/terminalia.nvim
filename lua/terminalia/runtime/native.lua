@@ -543,6 +543,18 @@ function M.ensure_autocmds()
         end,
     })
 
+    vim.api.nvim_create_autocmd({ 'BufWinEnter', 'WinEnter' }, {
+        group = group,
+        desc = 'Install Terminalia winbar on visible terminal buffers',
+        callback = function(event)
+            local bufnr = event.buf or vim.api.nvim_get_current_buf()
+
+            if vim.b[bufnr].terminalia_id ~= nil then
+                require('terminalia.winbar').install(bufnr)
+            end
+        end,
+    })
+
     autocmds_registered = true
 end
 

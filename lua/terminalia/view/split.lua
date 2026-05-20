@@ -14,6 +14,7 @@ function M.open(terminal, cfg, opts)
     vim.cmd(string.format('%s split', direction))
     vim.cmd(string.format('resize %d', size))
     vim.api.nvim_win_set_buf(0, bufnr)
+    require('terminalia.winbar').install(bufnr)
 
     if opts == nil or opts.start_insert ~= false then
         vim.cmd('startinsert')

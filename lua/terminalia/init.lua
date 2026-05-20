@@ -12,10 +12,14 @@ local runtime = require('terminalia.runtime.native')
 
 local M = {}
 local last_persistence_config
+local uri_autocmds_registered = false
+local adopting_uri_buffer = false
 
 ---@package
 function M._reset_setup_state()
     last_persistence_config = nil
+    uri_autocmds_registered = false
+    adopting_uri_buffer = false
 end
 
 ---@param cfg terminalia.Config
@@ -57,6 +61,64 @@ end
 
 local function clear_persistence_file(path)
     persistence.clear_path(path)
+end
+
+local function ensure_uri_autocmds()
+    if uri_autocmds_registered then
+        return
+    end
+
+    local group = vim.api.nvim_create_augroup('terminalia-uri-adoption', {
+        clear = true,
+    })
+
+    local function adopt_terminalia_uri_buffer(args)
+        if adopting_uri_buffer then
+            return
+        end
+
+        local bufnr = args.buf or vim.api.nvim_get_current_buf()
+
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+            return
+        end
+
+        local name = vim.api.nvim_buf_get_name(bufnr)
+        if not vim.startswith(name, 'terminalia://') then
+            return
+        end
+
+        if vim.b[bufnr].terminalia_history_view == true then
+            return
+        end
+
+        if vim.bo[bufnr].buftype == 'terminal' then
+            return
+        end
+
+        adopting_uri_buffer = true
+        local ok, err = pcall(api.adopt_uri_buffer, bufnr)
+        adopting_uri_buffer = false
+
+        if not ok then
+            vim.schedule(function()
+                vim.notify(string.format('Failed to adopt Terminalia buffer: %s', err), vim.log.levels.ERROR)
+            end)
+        end
+    end
+
+    vim.api.nvim_create_autocmd({ 'BufReadCmd', 'BufNewFile' }, {
+        group = group,
+        pattern = 'terminalia://*',
+        callback = adopt_terminalia_uri_buffer,
+    })
+
+    vim.api.nvim_create_autocmd({ 'BufEnter', 'WinEnter' }, {
+        group = group,
+        callback = adopt_terminalia_uri_buffer,
+    })
+
+    uri_autocmds_registered = true
 end
 
 M.config = config.get()
@@ -109,6 +171,7 @@ function M.setup(opts)
     end
 
     runtime.ensure_autocmds()
+    ensure_uri_autocmds()
     current_persistence_config = persistence_config_snapshot(M.config)
 
     api.restore({

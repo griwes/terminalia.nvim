@@ -29,6 +29,7 @@ function M.open(terminal, cfg, opts)
         style = 'minimal',
         border = float_cfg.border,
     })
+    require('terminalia.winbar').install(bufnr)
 
     if opts == nil or opts.start_insert ~= false then
         vim.cmd('startinsert')

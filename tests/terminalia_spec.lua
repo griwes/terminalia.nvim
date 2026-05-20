@@ -272,9 +272,13 @@ describe('terminalia', function()
     it('restores Terminalia session records without opening windows', function()
         local plugin = require('terminalia')
         local original_open_uri = plugin.api.open_uri
+        local original_start = plugin.api.start
 
         plugin.api.open_uri = function(uri, opts)
             error(string.format('unexpected window open: %s %s', uri, vim.inspect(opts)))
+        end
+        plugin.api.start = function(id)
+            error(string.format('unexpected terminal start: %s', id))
         end
 
         local restored = plugin.api.session_restore({
@@ -297,6 +301,7 @@ describe('terminalia', function()
         })
 
         plugin.api.open_uri = original_open_uri
+        plugin.api.start = original_start
 
         assert.are.equal(1, #restored)
         assert.are.equal('terminal:1', restored[1].id)
@@ -304,6 +309,122 @@ describe('terminalia', function()
         assert.are.equal('/tmp/workspace', restored[1].cwd)
         assert.are.equal('registered', restored[1].status)
         assert.are.equal('float', restored[1].preferred_view)
+    end)
+
+    it('adopts and starts visible restored Terminalia URI buffers in place', function()
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
+        local original_start = plugin.api.start
+        local started = {}
+        local terminal_uri = uri.encode_terminal_uri({
+            id = 'terminal:visible',
+            name = 'visible',
+            context_id = 'context:host',
+        })
+        local bufnr = vim.api.nvim_create_buf(true, true)
+
+        plugin.api.start = function(id)
+            table.insert(started, id)
+            return plugin.api.update(id, {
+                status = 'running',
+                job_id = 123,
+            })
+        end
+        vim.api.nvim_buf_set_name(bufnr, terminal_uri)
+        vim.api.nvim_win_set_buf(0, bufnr)
+
+        local restored = plugin.api.session_restore({
+            kind = 'terminalia.restore_terminal_buffers',
+            payload = {
+                terminals = {
+                    {
+                        id = 'terminal:visible',
+                        uri = terminal_uri,
+                        name = 'visible',
+                        namespace = 'workspace',
+                        cwd = '/tmp/workspace',
+                        context_id = 'context:host',
+                        preferred_view = 'split',
+                        disposable = false,
+                        status = 'running',
+                    },
+                },
+            },
+        })
+
+        plugin.api.start = original_start
+
+        assert.are.same({ 'terminal:visible' }, started)
+        assert.are.equal(1, #restored)
+        assert.are.equal(bufnr, restored[1].bufnr)
+        assert.are.equal(bufnr, vim.api.nvim_win_get_buf(0))
+        assert.are.equal('terminal:visible', vim.b[bufnr].terminalia_id)
+        assert.are.equal('running', restored[1].status)
+    end)
+
+    it('adopts explicitly edited Terminalia live URI buffers in place', function()
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
+        local original_start = plugin.api.start
+        local started = {}
+        local terminal = plugin.api.create({
+            name = 'shell',
+            command = { 'sh', '-lc', 'printf ready' },
+        })
+        local terminal_uri = uri.encode_terminal_uri(terminal)
+        local winid = vim.api.nvim_get_current_win()
+
+        plugin.api.start = function(id)
+            table.insert(started, id)
+            return plugin.api.update(id, {
+                bufnr = vim.api.nvim_get_current_buf(),
+                status = 'running',
+                job_id = 321,
+            })
+        end
+
+        vim.api.nvim_cmd({ cmd = 'edit', args = { terminal_uri } }, {})
+
+        plugin.api.start = original_start
+
+        local bufnr = vim.api.nvim_get_current_buf()
+        local adopted = assert(plugin.api.get(terminal.id))
+
+        assert.are.same({ terminal.id }, started)
+        assert.are.equal(winid, vim.api.nvim_get_current_win())
+        assert.are.equal(terminal_uri, vim.api.nvim_buf_get_name(bufnr))
+        assert.are.equal(bufnr, adopted.bufnr)
+        assert.are.equal('running', adopted.status)
+        assert.are.equal(terminal.id, vim.b[bufnr].terminalia_id)
+        assert.is_false(vim.bo[bufnr].swapfile)
+    end)
+
+    it('adopts explicitly edited Terminalia history URI buffers in place', function()
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
+        local history = require('terminalia.history')
+        local terminal = plugin.api.create({
+            name = 'build',
+        })
+        local history_uri = uri.encode_history_uri(terminal)
+        local winid = vim.api.nvim_get_current_win()
+        local window_count = #vim.api.nvim_list_wins()
+
+        history.append_chunks(terminal.id, { 'alpha', 'beta', '' })
+        history.flush(terminal.id)
+
+        vim.api.nvim_cmd({ cmd = 'edit', args = { history_uri } }, {})
+
+        local bufnr = vim.api.nvim_get_current_buf()
+
+        assert.are.equal(winid, vim.api.nvim_get_current_win())
+        assert.are.equal(window_count, #vim.api.nvim_list_wins())
+        assert.are.equal(history_uri, vim.api.nvim_buf_get_name(bufnr))
+        assert.are.same({ 'alpha', 'beta' }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+        assert.are.equal('nofile', vim.bo[bufnr].buftype)
+        assert.are.equal('terminaliahistory', vim.bo[bufnr].filetype)
+        assert.is_false(vim.bo[bufnr].swapfile)
+        assert.is_false(vim.bo[bufnr].modified)
     end)
 
     it('notifies continuity.nvim when Terminalia state changes', function()
@@ -1514,6 +1635,57 @@ describe('terminalia', function()
         assert.are.equal('running', opened.status)
         assert.is_true(vim.api.nvim_buf_is_valid(bufnr))
         assert.is_true(job_id > 0)
+    end)
+
+    it('renders Terminalia buffer winbars through Statuesque when it is available', function()
+        local plugin = require('terminalia')
+        local original_statuesque = package.loaded.statuesque
+        local observed = {}
+        local terminal = plugin.api.create({
+            name = 'shell',
+            command = { 'sh', '-lc', 'printf ready' },
+            cwd = '/tmp/workspace',
+        })
+        local bufnr = vim.api.nvim_create_buf(true, false)
+
+        package.loaded.statuesque = {
+            replace_window_surface = function(opts)
+                observed.replacement = opts
+                vim.wo[0][opts.target] = opts.expression
+                return { vim.api.nvim_get_current_win() }
+            end,
+            compose = function(spec, opts)
+                observed.sigil = opts.sigil
+                observed.surface = opts.surface
+                return spec
+            end,
+            render = function(spec, target, opts)
+                observed.target = target
+                observed.winid = opts.winid
+                observed.spec = spec
+                return 'statuesque-terminalia-winbar'
+            end,
+        }
+
+        vim.b[bufnr].terminalia_id = terminal.id
+        vim.api.nvim_win_set_buf(0, bufnr)
+        require('terminalia.winbar').install(bufnr)
+
+        local rendered = require('terminalia.winbar').render()
+
+        package.loaded.statuesque = original_statuesque
+
+        assert.are.equal("%!v:lua.require'terminalia.winbar'.render()", vim.wo[0].winbar)
+        assert.are.equal('statuesque-terminalia-winbar', rendered)
+        assert.are.equal('terminalia', observed.replacement.owner)
+        assert.are.equal('winbar', observed.replacement.target)
+        assert.are.equal(bufnr, observed.replacement.bufnr)
+        assert.is_true(observed.replacement.all_windows)
+        assert.are.equal('', observed.sigil)
+        assert.are.equal('winbar', observed.surface)
+        assert.are.equal('winbar', observed.target)
+        assert.are.equal(vim.api.nvim_get_current_win(), observed.winid)
+        assert.are.equal('terminalia', observed.spec.left[1].role)
     end)
 
     it('starts terminals in terminal buffers', function()
