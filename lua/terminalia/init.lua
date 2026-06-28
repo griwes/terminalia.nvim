@@ -84,7 +84,7 @@ local function ensure_uri_autocmds()
         end
 
         local name = vim.api.nvim_buf_get_name(bufnr)
-        if not vim.startswith(name, 'terminalia://') then
+        if not vim.startswith(name, 'terminalia://') and not vim.startswith(name, 'terminal-manager://') then
             return
         end
 
@@ -109,7 +109,7 @@ local function ensure_uri_autocmds()
 
     vim.api.nvim_create_autocmd({ 'BufReadCmd', 'BufNewFile' }, {
         group = group,
-        pattern = 'terminalia://*',
+        pattern = { 'terminalia://*', 'terminal-manager://*' },
         callback = adopt_terminalia_uri_buffer,
     })
 
@@ -179,17 +179,40 @@ function M.setup(opts)
         merge = merge_restore,
     })
 
+    pcall(api.setup_ministry_integration)
+
     local ok, session_plugin = pcall(require, 'continuity')
 
     if ok and type(session_plugin) == 'table' and type(session_plugin.api) == 'table' then
         if type(session_plugin.api.register_contributor) == 'function' then
-            session_plugin.api.register_contributor('terminalia', {
+            local registered, err = pcall(session_plugin.api.register_contributor, 'terminalia', {
                 capture = api.session_capture,
                 plan_restore = api.session_plan_restore,
                 restore = api.session_restore,
                 restore_phase = 'after_layout',
                 restore_after = { 'arboretum', 'consulate', 'laboratory' },
             })
+
+            if not registered then
+                vim.notify(
+                    string.format('Failed to register Terminalia session contributor: %s', err),
+                    vim.log.levels.WARN
+                )
+            end
+
+            local legacy_registered, legacy_err = pcall(session_plugin.api.register_contributor, 'terminal_manager', {
+                plan_restore = api.session_plan_restore,
+                restore = api.session_restore,
+                restore_phase = 'after_layout',
+                restore_after = { 'arboretum', 'consulate', 'laboratory' },
+            })
+
+            if not legacy_registered then
+                vim.notify(
+                    string.format('Failed to register legacy Terminalia session contributor: %s', legacy_err),
+                    vim.log.levels.WARN
+                )
+            end
         end
     end
 

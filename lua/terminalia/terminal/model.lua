@@ -17,6 +17,7 @@
 ---@field status? terminalia.TerminalStatus
 ---@field command? terminalia.TerminalCommand
 ---@field view? terminalia.ViewKind
+---@field instance_id? string
 ---@field created_at? integer
 ---@field last_opened_at? integer
 ---@field exit_code? integer
@@ -32,6 +33,7 @@
 ---@field status terminalia.TerminalStatus
 ---@field command? terminalia.TerminalCommand
 ---@field view terminalia.ViewKind
+---@field instance_id string
 ---@field created_at integer
 ---@field last_opened_at? integer
 ---@field exit_code? integer
@@ -79,6 +81,7 @@
 ---@field bufnr? integer
 ---@field job_id? integer
 ---@field exit_code? integer
+---@field instance_id string
 ---@field created_at integer
 ---@field last_opened_at? integer
 
@@ -87,6 +90,14 @@ local config = require('terminalia.config')
 local M = {}
 
 local VALID_ID_PATTERN = '^[%w:_%-]+$'
+local next_instance_id = 1
+
+---@return string
+local function alloc_instance_id()
+    local id = string.format('terminal-instance:%d:%s:%d', vim.fn.getpid(), tostring(vim.uv.hrtime()), next_instance_id)
+    next_instance_id = next_instance_id + 1
+    return id
+end
 
 ---@param id any
 ---@return boolean
@@ -163,6 +174,8 @@ function M.new_terminal(opts)
         status = normalize_status(opts.status),
         command = opts.command,
         preferred_view = preferred_view,
+        instance_id = type(opts.instance_id) == 'string' and opts.instance_id ~= '' and opts.instance_id
+            or alloc_instance_id(),
         created_at = opts.created_at or os.time(),
         last_opened_at = opts.last_opened_at,
         exit_code = opts.exit_code,
@@ -200,6 +213,7 @@ function M.to_persisted_record(terminal)
         status = terminal.status,
         command = terminal.command,
         view = terminal.preferred_view,
+        instance_id = terminal.instance_id,
         created_at = terminal.created_at,
         last_opened_at = terminal.last_opened_at,
         exit_code = terminal.exit_code,

@@ -1,9 +1,9 @@
 local config = require('terminalia.config')
 local context_api = require('terminalia.api.context')
+local context_state = require('terminalia.context.state')
 local uri_api = require('terminalia.api.uri')
 local history = require('terminalia.history')
 local ministry_integration = require('terminalia.integrations.ministry')
-local persistence = require('terminalia.persistence')
 local relay_args = require('terminalia.relay.args')
 local relay_open = require('terminalia.relay.open')
 local terminal_action_protocol = require('terminalia.terminal.action_protocol')
@@ -88,6 +88,12 @@ end
 ---@return table|nil, table|nil
 function M.attach_ministry_terminal_context(ministry_terminal_id, terminal_id)
     return context_api.attach_ministry_terminal_context(ministry_terminal_id, terminal_id)
+end
+
+---Register automatic context propagation for Ministry-owned terminals.
+---@return table|nil, table|nil
+function M.setup_ministry_integration()
+    return context_api.setup_ministry_integration()
 end
 
 ---Restore a saved context stack through registered providers.
@@ -309,33 +315,35 @@ local function terminal_buffer_is_session_state(bufnr)
     return bufnr ~= nil and vim.api.nvim_buf_is_valid(bufnr)
 end
 
----@return table
-function M.session_capture()
-    local terminal_ids = {}
+local MAX_CAPTURE_BYTES = 512 * 1024
+local MAX_CAPTURE_CONTEXTS = 128
+local MAX_CAPTURE_TERMINALS = 64
 
-    for _, terminal in ipairs(M.list()) do
-        if terminal_buffer_is_session_state(terminal.bufnr) then
-            table.insert(terminal_ids, terminal.id)
-        end
-    end
-
-    return {
-        version = 1,
-        state_ref = {
-            kind = 'terminalia.persistence',
-            state_file = config.get().state_file,
-        },
-        current_context_id = M.current_context().id,
-        terminal_ids = terminal_ids,
-    }
-end
+local terminal_restore_item
 
 ---@param terminal table
----@return table
-local function terminal_restore_item(terminal)
-    return {
+---@param restart? boolean
+---@return table?
+terminal_restore_item = function(terminal, restart)
+    local terminal_uri = terminal.uri
+
+    if type(terminal_uri) ~= 'string' then
+        local ok, encoded = pcall(uri.encode_terminal_uri, terminal)
+
+        if not ok then
+            vim.notify(
+                string.format('Skipped Terminalia session terminal with invalid URI data: %s', encoded),
+                vim.log.levels.WARN
+            )
+            return nil
+        end
+
+        terminal_uri = encoded
+    end
+
+    return vim.deepcopy({
         id = terminal.id,
-        uri = terminal.uri or uri.encode_terminal_uri(terminal),
+        uri = terminal_uri,
         name = terminal.name,
         namespace = terminal.namespace,
         cwd = terminal.cwd,
@@ -345,34 +353,184 @@ local function terminal_restore_item(terminal)
         preferred_view = terminal.preferred_view,
         disposable = terminal.disposable,
         status = terminal.status,
-    }
+        instance_id = terminal.instance_id,
+        created_at = terminal.created_at,
+        last_opened_at = terminal.last_opened_at,
+        exit_code = terminal.exit_code,
+        restart = restart == true,
+    })
 end
 
----@param captured table
----@param id string
----@return table?
-local function terminal_from_reference(captured, id)
-    local existing = M.get(id)
-    if existing ~= nil then
-        return existing
+---@param contexts_by_id table<string, terminalia.TerminalContext>
+---@param selected table<string, boolean>
+---@param context_id string
+---@return boolean
+local function add_context_chain(contexts_by_id, selected, context_id)
+    local chain = {}
+    local seen = {}
+    local current_id = context_id
+
+    while type(current_id) == 'string' and current_id ~= '' and not selected[current_id] do
+        if seen[current_id] then
+            return false
+        end
+        seen[current_id] = true
+
+        local context = contexts_by_id[current_id]
+        if context == nil then
+            return false
+        end
+        table.insert(chain, context)
+        current_id = context.parent_id
     end
 
-    local ref = type(captured.state_ref) == 'table' and captured.state_ref or {}
-    if ref.kind ~= 'terminalia.persistence' or type(ref.state_file) ~= 'string' then
-        return nil
+    if vim.tbl_count(selected) + #chain > MAX_CAPTURE_CONTEXTS then
+        return false
     end
 
-    local payload = persistence.load({
-        state_file = ref.state_file,
-    })
+    for _, context in ipairs(chain) do
+        selected[context.id] = true
+    end
+    return true
+end
 
-    for _, terminal in ipairs(payload.terminals or {}) do
-        if terminal.id == id then
-            return terminal
+---@param terminal_items table[]
+---@param current_context_id string
+---@return table[], string, table[]
+local function select_capture_contexts(terminal_items, current_context_id)
+    local all_contexts = M.list_contexts()
+    local contexts_by_id = {}
+    for _, context in ipairs(all_contexts) do
+        contexts_by_id[context.id] = context
+    end
+
+    local selected = {}
+    if not add_context_chain(contexts_by_id, selected, current_context_id) then
+        current_context_id = 'context:host'
+        add_context_chain(contexts_by_id, selected, current_context_id)
+    end
+
+    local accepted_terminals = {}
+    for _, terminal in ipairs(terminal_items) do
+        if add_context_chain(contexts_by_id, selected, terminal.context_id or 'context:host') then
+            table.insert(accepted_terminals, terminal)
         end
     end
 
-    return nil
+    local captured_contexts = {}
+    for _, context in ipairs(all_contexts) do
+        if selected[context.id] then
+            table.insert(captured_contexts, {
+                id = context.id,
+                kind = context.kind,
+                label = context.label,
+                parent_id = context.parent_id,
+                metadata = vim.deepcopy(context.metadata or {}),
+                created_at = context.created_at,
+            })
+        end
+    end
+
+    return captured_contexts, current_context_id, accepted_terminals
+end
+
+---@param payload table
+---@return integer?
+local function encoded_payload_size(payload)
+    local ok, encoded = pcall(vim.json.encode, payload)
+    return ok and #encoded or nil
+end
+
+---Capture immutable, bounded terminal and context restore data for Continuity.
+---Disposable terminals with live buffers are intentionally marked for restart;
+---normal Terminalia persistence continues to exclude disposable terminals.
+---@return table
+function M.session_capture()
+    local terminal_items = {}
+    local skipped = 0
+
+    for _, terminal in ipairs(M.list()) do
+        if terminal_buffer_is_session_state(terminal.bufnr) and type(terminal.id) == 'string' then
+            if #terminal_items >= MAX_CAPTURE_TERMINALS then
+                skipped = skipped + 1
+            else
+                local item = terminal_restore_item(terminal, true)
+                if item ~= nil then
+                    table.insert(terminal_items, item)
+                else
+                    skipped = skipped + 1
+                end
+            end
+        end
+    end
+
+    local current_context_id = M.current_context().id
+    local candidate_count = #terminal_items
+    local captured_contexts
+    captured_contexts, current_context_id, terminal_items = select_capture_contexts(terminal_items, current_context_id)
+    skipped = skipped + candidate_count - #terminal_items
+
+    local payload = {
+        version = 2,
+        current_context_id = current_context_id,
+        contexts = captured_contexts,
+        terminals = terminal_items,
+    }
+
+    local payload_size = encoded_payload_size(payload)
+    while (payload_size == nil or payload_size > MAX_CAPTURE_BYTES) and #terminal_items > 0 do
+        table.remove(terminal_items)
+        skipped = skipped + 1
+        captured_contexts, current_context_id, terminal_items =
+            select_capture_contexts(terminal_items, current_context_id)
+        payload.current_context_id = current_context_id
+        payload.contexts = captured_contexts
+        payload.terminals = terminal_items
+        payload_size = encoded_payload_size(payload)
+    end
+
+    if payload_size == nil or payload_size > MAX_CAPTURE_BYTES then
+        skipped = skipped + #terminal_items
+        payload = {
+            version = 2,
+            current_context_id = 'context:host',
+            contexts = vim.tbl_filter(function(context)
+                return context.id == 'context:host'
+            end, M.list_contexts()),
+            terminals = {},
+        }
+    end
+
+    if skipped > 0 then
+        vim.notify(
+            string.format('Skipped %d Terminalia session terminal(s) to keep capture data bounded', skipped),
+            vim.log.levels.WARN
+        )
+    end
+
+    return vim.deepcopy(payload)
+end
+
+---@param captured table
+---@return table[]
+local function legacy_session_restore_items(captured)
+    local terminals = type(captured) == 'table' and type(captured.terminals) == 'table' and captured.terminals or {}
+    local items = {}
+
+    for _, terminal in ipairs(terminals) do
+        if type(terminal) == 'table' and type(terminal.uri) == 'string' and terminal.uri ~= '' then
+            table.insert(items, {
+                id = terminal.id,
+                uri = terminal.uri,
+                name = terminal.name,
+                namespace = terminal.namespace,
+                preferred_view = terminal.preferred_view,
+                disposable = terminal.disposable,
+            })
+        end
+    end
+
+    return items
 end
 
 ---Build restore-plan steps for captured Terminalia session state.
@@ -382,12 +540,18 @@ function M.session_plan_restore(captured)
     ---@type table[]
     local terminals = {}
 
-    if type(captured) == 'table' and captured.version == 1 and type(captured.terminal_ids) == 'table' then
-        for _, id in ipairs(captured.terminal_ids) do
-            if type(id) == 'string' then
-                local terminal = terminal_from_reference(captured, id)
-                if terminal ~= nil then
-                    table.insert(terminals, terminal_restore_item(terminal))
+    if type(captured) == 'table' and captured.version == 2 and type(captured.terminals) == 'table' then
+        for _, terminal in ipairs(captured.terminals) do
+            if
+                type(terminal) == 'table'
+                and type(terminal.id) == 'string'
+                and terminal.id ~= ''
+                and type(terminal.uri) == 'string'
+                and terminal.uri ~= ''
+            then
+                local item = terminal_restore_item(terminal, terminal.restart == true)
+                if item ~= nil then
+                    table.insert(terminals, item)
                 end
             end
         end
@@ -400,8 +564,29 @@ function M.session_plan_restore(captured)
                 title = 'Restore terminal buffer state',
                 detail = string.format('Restore %d Terminalia terminal buffer record(s)', #terminals),
                 payload = {
+                    capture_version = 2,
                     current_context_id = captured.current_context_id,
+                    contexts = vim.deepcopy(captured.contexts or {}),
                     terminals = terminals,
+                },
+            },
+        }
+    end
+
+    local legacy_terminals = type(captured) == 'table'
+            and captured.version ~= 2
+            and legacy_session_restore_items(captured)
+        or {}
+
+    if #legacy_terminals > 0 then
+        return {
+            {
+                kind = 'terminalia.reopen_terminals',
+                title = 'Reopen terminal buffers',
+                detail = string.format('Reopen %d Terminalia terminal(s) from canonical URIs', #legacy_terminals),
+                payload = {
+                    current_context_id = captured.current_context_id,
+                    terminals = legacy_terminals,
                 },
             },
         }
@@ -429,8 +614,9 @@ function M.session_plan_restore(captured)
 end
 
 ---@param terminal table
+---@param collision_safe? boolean
 ---@return terminalia.TerminalRecord?
-local function ensure_restored_terminal_record(terminal)
+local function ensure_restored_terminal_record(terminal, collision_safe)
     if type(terminal) ~= 'table' or type(terminal.id) ~= 'string' or terminal.id == '' then
         return nil
     end
@@ -438,11 +624,21 @@ local function ensure_restored_terminal_record(terminal)
     local existing = M.get(terminal.id)
 
     if existing ~= nil then
-        return existing
+        if not collision_safe then
+            return existing
+        end
+
+        if
+            type(terminal.instance_id) == 'string'
+            and terminal.instance_id ~= ''
+            and existing.instance_id == terminal.instance_id
+        then
+            return existing
+        end
     end
 
     return registry.create({
-        id = terminal.id,
+        id = existing == nil and terminal.id or nil,
         name = terminal.name,
         namespace = terminal.namespace,
         cwd = terminal.cwd,
@@ -452,6 +648,10 @@ local function ensure_restored_terminal_record(terminal)
         disposable = terminal.disposable,
         status = terminal.status == 'running' and 'registered' or terminal.status,
         view = terminal.preferred_view,
+        instance_id = terminal.instance_id,
+        created_at = terminal.created_at,
+        last_opened_at = terminal.last_opened_at,
+        exit_code = terminal.exit_code,
     })
 end
 
@@ -492,13 +692,22 @@ local function adopt_restored_terminal_buffer(record, terminal)
         return record
     end
 
+    if record.id ~= terminal.id then
+        pcall(vim.api.nvim_buf_set_name, bufnr, uri.encode_terminal_uri(record))
+    end
+
     vim.b[bufnr].terminalia_id = record.id
+    vim.b[bufnr].terminal_manager_id = record.id
     record = registry.update(record.id, {
         bufnr = bufnr,
     })
     require('terminalia.winbar').install(bufnr)
 
-    if buffer_is_visible(bufnr) and not (record.status == 'running' and record.job_id ~= nil) then
+    if
+        terminal.restart ~= false
+        and buffer_is_visible(bufnr)
+        and not (record.status == 'running' and record.job_id ~= nil)
+    then
         local ok, started = pcall(M.start, record.id)
 
         if ok and started ~= nil then
@@ -511,20 +720,62 @@ end
 
 ---@param step continuity.RestorePlanStep
 function M.session_restore(step)
-    if step.kind ~= 'terminalia.restore_terminal_buffers' and step.kind ~= 'terminalia.reopen_terminals' then
-        error(string.format('Unsupported Terminalia restore step: %s', step.kind))
+    if type(step) ~= 'table' then
+        error('Invalid Terminalia restore step: expected table')
+    end
+
+    local is_reopen_step = step.kind == 'terminalia.reopen_terminals'
+        or step.kind == 'terminal_manager.reopen_terminals'
+
+    if step.kind ~= 'terminalia.restore_terminal_buffers' and not is_reopen_step then
+        error(string.format('Unsupported Terminalia restore step: %s', tostring(step.kind)))
     end
 
     local payload = type(step.payload) == 'table' and step.payload or {}
     local restored = {}
 
-    for _, terminal in ipairs(payload.terminals or {}) do
-        local record = ensure_restored_terminal_record(terminal)
+    if type(payload.terminals) ~= 'table' then
+        return restored
+    end
+
+    if is_reopen_step then
+        for _, terminal in ipairs(payload.terminals) do
+            if type(terminal) == 'table' and type(terminal.uri) == 'string' then
+                table.insert(
+                    restored,
+                    M.open_uri(terminal.uri, {
+                        view = terminal.preferred_view,
+                    })
+                )
+            end
+        end
+
+        return restored
+    end
+
+    local context_mapping = context_state.merge_payload({
+        contexts = type(payload.contexts) == 'table' and payload.contexts or {},
+    })
+    local current_context_id = type(payload.current_context_id) == 'string'
+            and (context_mapping[payload.current_context_id] or payload.current_context_id)
+        or nil
+
+    for _, terminal in ipairs(payload.terminals) do
+        terminal = type(terminal) == 'table' and vim.deepcopy(terminal) or terminal
+        if type(terminal) == 'table' and terminal.context_id ~= nil then
+            terminal.context_id = context_mapping[terminal.context_id] or terminal.context_id
+        end
+
+        local record = ensure_restored_terminal_record(terminal, payload.capture_version == 2)
 
         if record ~= nil then
             record = adopt_restored_terminal_buffer(record, terminal)
             table.insert(restored, record)
         end
+    end
+
+    if current_context_id ~= nil and context_state.get(current_context_id) ~= nil then
+        context_state.set_current(current_context_id)
     end
 
     return restored
@@ -561,11 +812,18 @@ function M.send(id, data)
     return runtime.send(terminal, data)
 end
 
----Return the captured history lines for a terminal id.
+---@param id string
+---@return terminalia.TerminalRecord?
+local function terminal_with_readable_history(id)
+    runtime.finalize_disposable(id)
+    return registry.get(id) or runtime.exited_terminal(id)
+end
+
+---Return the transcript history lines for a terminal id.
 ---@param id string
 ---@return string[]
 function M.history_lines(id)
-    local terminal = registry.get(id) or runtime.exited_terminal(id)
+    local terminal = terminal_with_readable_history(id)
 
     assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
 
@@ -582,7 +840,7 @@ end
 ---@param id string
 ---@return terminalia.TerminalOutput
 function M.output(id)
-    local terminal = registry.get(id) or runtime.exited_terminal(id)
+    local terminal = terminal_with_readable_history(id)
 
     assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
 
@@ -605,7 +863,7 @@ end
 ---@param id string
 ---@return string[]
 function M.output_lines(id)
-    local terminal = registry.get(id) or runtime.exited_terminal(id)
+    local terminal = terminal_with_readable_history(id)
 
     assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
 
@@ -646,7 +904,7 @@ end
 ---@param id string
 ---@return integer
 function M.open_history(id)
-    local terminal = registry.get(id) or runtime.exited_terminal(id)
+    local terminal = terminal_with_readable_history(id)
 
     assert(terminal ~= nil, string.format('Unknown terminal id: %s', id))
 
@@ -684,6 +942,7 @@ end
 ---@return terminalia.TerminalRecord?
 function M.delete(id)
     if registry.get(id) == nil then
+        ministry_integration.detach_terminal_context_for_terminal(id)
         return nil
     end
 
@@ -701,11 +960,13 @@ function M.release(id)
     if terminal == nil then
         history.clear(id)
         runtime.clear_output(id)
+        ministry_integration.detach_terminal_context_for_terminal(id)
         return nil
     end
 
     if registered == nil then
         local released = runtime.release_exited_terminal(id)
+        ministry_integration.detach_terminal_context_for_terminal(id)
         notify_session()
         return released
     end
@@ -717,6 +978,7 @@ function M.release(id)
 
     history.clear(id)
     runtime.clear_output(id)
+    ministry_integration.detach_terminal_context_for_terminal(id)
     local released = registry.remove(id, { clear_history = false }) or terminal
     notify_session()
     return released

@@ -3,6 +3,7 @@ local contexts = require('terminalia.context.state')
 local M = {}
 
 local SCHEME = 'terminalia://'
+local LEGACY_SCHEME = 'terminal-manager://'
 
 ---@param value string
 ---@return string
@@ -147,33 +148,28 @@ end
 
 ---@param segments string[]
 ---@return integer?, { kind: string, label: string, id: string, metadata: table<string, string> }[], string[]?, string?
-local function decode_context_stack(segments)
+local function decode_legacy_context_stack_at_end(segments)
+    local legacy_terminal_marker = #segments - 2
+
+    if legacy_terminal_marker < 3 or segments[legacy_terminal_marker] ~= 'terminal' then
+        return nil, nil, nil, 'Malformed Terminalia URI path'
+    end
+
+    local ok, legacy_stack, legacy_ids = pcall(decode_legacy_context_stack, segments, legacy_terminal_marker)
+
+    if not ok then
+        return nil, nil, nil, legacy_stack
+    end
+
+    return legacy_terminal_marker, legacy_stack, legacy_ids
+end
+
+---@param segments string[]
+---@return integer?, { kind: string, label: string, id: string, metadata: table<string, string> }[], string[]?, string?
+local function decode_marker_context_stack(segments)
     local stack = {}
     local stack_ids = {}
     local index = 3
-
-    if segments[index] ~= 'context' then
-        local legacy_terminal_marker
-
-        for legacy_index = 3, #segments do
-            if segments[legacy_index] == 'terminal' then
-                legacy_terminal_marker = legacy_index
-                break
-            end
-        end
-
-        if legacy_terminal_marker == nil or legacy_terminal_marker + 2 ~= #segments then
-            return nil, nil, nil, 'Malformed Terminalia URI path'
-        end
-
-        local ok, legacy_stack, legacy_ids = pcall(decode_legacy_context_stack, segments, legacy_terminal_marker)
-
-        if not ok then
-            return nil, nil, nil, legacy_stack
-        end
-
-        return legacy_terminal_marker, legacy_stack, legacy_ids
-    end
 
     while index <= #segments do
         if segments[index] == 'terminal' then
@@ -209,14 +205,42 @@ local function decode_context_stack(segments)
     return nil, nil, nil, 'Malformed Terminalia URI path'
 end
 
+---@param segments string[]
+---@return integer?, { kind: string, label: string, id: string, metadata: table<string, string> }[], string[]?, string?
+local function decode_context_stack(segments)
+    if segments[3] ~= 'context' then
+        return decode_legacy_context_stack_at_end(segments)
+    end
+
+    local terminal_marker, stack, stack_ids, err = decode_marker_context_stack(segments)
+
+    if terminal_marker ~= nil and terminal_marker + 2 == #segments then
+        return terminal_marker, stack, stack_ids
+    end
+
+    local marker_err = terminal_marker ~= nil and 'Malformed Terminalia URI path' or err
+    local legacy_terminal_marker, legacy_stack, legacy_ids = decode_legacy_context_stack_at_end(segments)
+
+    if legacy_terminal_marker ~= nil then
+        return legacy_terminal_marker, legacy_stack, legacy_ids
+    end
+
+    return nil, nil, nil, marker_err
+end
+
 ---@param uri_value string
 ---@return { kind: string, terminal_id: string, name: string, context_id?: string, context_stack: { kind: string, label: string, id: string, metadata: table<string, string> }[], context_stack_ids: string[] }?, string?
 function M.decode(uri_value)
-    if type(uri_value) ~= 'string' or not vim.startswith(uri_value, SCHEME) then
+    local body
+
+    if type(uri_value) == 'string' and vim.startswith(uri_value, SCHEME) then
+        body = uri_value:sub(#SCHEME + 1)
+    elseif type(uri_value) == 'string' and vim.startswith(uri_value, LEGACY_SCHEME) then
+        body = uri_value:sub(#LEGACY_SCHEME + 1)
+    else
         return nil, 'Unsupported Terminalia URI'
     end
 
-    local body = uri_value:sub(#SCHEME + 1)
     local segments = vim.split(body, '/', { plain = true, trimempty = true })
 
     if #segments < 5 then

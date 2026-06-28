@@ -68,13 +68,15 @@ function M.open_uri(api, uri_value, opts)
         error(assert(err))
     end
 
-    restore_context(decoded)
-
+    local opened
     if decoded.kind == 'history' then
-        return api.open_history(decoded.terminal_id)
+        opened = api.open_history(decoded.terminal_id)
+    else
+        opened = api.open(decoded.terminal_id, opts)
     end
 
-    return api.open(decoded.terminal_id, opts)
+    restore_context(decoded)
+    return opened
 end
 
 ---@param api table
@@ -108,8 +110,12 @@ end
 
 ---@param replacement integer
 ---@param obsolete integer
-local function replace_current_buffer(replacement, obsolete)
-    vim.api.nvim_win_set_buf(0, replacement)
+local function replace_buffer_in_windows(replacement, obsolete)
+    for _, winid in ipairs(vim.api.nvim_list_wins()) do
+        if vim.api.nvim_win_is_valid(winid) and vim.api.nvim_win_get_buf(winid) == obsolete then
+            vim.api.nvim_win_set_buf(winid, replacement)
+        end
+    end
 
     if obsolete ~= replacement and vim.api.nvim_buf_is_valid(obsolete) then
         pcall(vim.api.nvim_buf_delete, obsolete, { force = true })
@@ -124,7 +130,7 @@ local function adopt_terminal_buffer(api, bufnr, decoded)
     local terminal = ensure_uri_terminal_record(api, decoded)
 
     if terminal.bufnr ~= nil and vim.api.nvim_buf_is_valid(terminal.bufnr) and terminal.bufnr ~= bufnr then
-        replace_current_buffer(terminal.bufnr, bufnr)
+        replace_buffer_in_windows(terminal.bufnr, bufnr)
         require('terminalia.winbar').install(terminal.bufnr)
         return terminal
     end
@@ -132,6 +138,7 @@ local function adopt_terminal_buffer(api, bufnr, decoded)
     vim.bo[bufnr].bufhidden = 'hide'
     vim.bo[bufnr].swapfile = false
     vim.b[bufnr].terminalia_id = terminal.id
+    vim.b[bufnr].terminal_manager_id = terminal.id
     terminal = api.update(terminal.id, {
         bufnr = bufnr,
     })
@@ -160,8 +167,8 @@ local function adopt_history_buffer(api, bufnr, decoded)
     vim.bo[bufnr].bufhidden = 'wipe'
     vim.bo[bufnr].swapfile = false
     vim.bo[bufnr].modifiable = true
-    vim.bo[bufnr].filetype = 'terminaliahistory'
     vim.b[bufnr].terminalia_history_view = true
+    vim.bo[bufnr].filetype = 'terminalmanagerhistory'
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
     vim.bo[bufnr].modifiable = false
     vim.bo[bufnr].modified = false

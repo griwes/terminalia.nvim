@@ -47,4 +47,19 @@ describe('terminalia context state', function()
         assert.are.equal('app-dev', current.label)
         assert.are.equal('devcontainer:1', current.metadata.devcontainer_id)
     end)
+
+    it('advances automatic context ids after creating an explicit numeric context id', function()
+        local plugin = require('terminalia')
+
+        plugin.api.create_context({
+            id = 'context:1',
+            label = 'manual',
+        })
+
+        local context = plugin.api.create_context({
+            label = 'automatic',
+        })
+
+        assert.are.equal('context:2', context.id)
+    end)
 end)

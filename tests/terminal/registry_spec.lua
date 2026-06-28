@@ -64,4 +64,15 @@ describe('terminalia terminal registry', function()
             })
         )
     end)
+
+    it('rejects terminals created with unknown context ids', function()
+        local plugin = require('terminalia')
+
+        assert.has_error(function()
+            plugin.api.create({
+                name = 'orphan',
+                context_id = 'context:missing',
+            })
+        end, 'Unknown terminal context id: "context:missing"')
+    end)
 end)

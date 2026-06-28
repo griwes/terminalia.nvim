@@ -134,21 +134,25 @@ describe('terminalia', function()
         assert.are.equal('split', plugin.config.default_view)
     end)
 
+    it('keeps the legacy terminal_manager module entrypoint available', function()
+        assert.are.equal(require('terminalia'), require('terminal_manager'))
+    end)
+
     it('exposes the branded Overseer strategy module', function()
         assert.are.equal('function', type(require('overseer.strategy.terminalia_context').new))
     end)
 
     it('registers a session contributor when continuity.nvim is available', function()
-        local observed = nil
+        local observed = {}
         local original_session = package.loaded.continuity
 
         package.loaded.continuity = {
             api = {
                 register_contributor = function(name, contributor)
-                    observed = {
+                    table.insert(observed, {
                         name = name,
                         contributor = contributor,
-                    }
+                    })
                 end,
             },
         }
@@ -160,12 +164,37 @@ describe('terminalia', function()
         package.loaded.continuity = original_session
 
         assert.is_true(ok, err)
-        assert.are.equal('terminalia', assert(observed).name)
-        assert.is_function(observed.contributor.capture)
-        assert.is_function(observed.contributor.plan_restore)
-        assert.is_function(observed.contributor.restore)
-        assert.are.equal('after_layout', observed.contributor.restore_phase)
-        assert.are.same({ 'arboretum', 'consulate', 'laboratory' }, observed.contributor.restore_after)
+        assert.are.equal('terminalia', observed[1].name)
+        assert.is_function(observed[1].contributor.capture)
+        assert.is_function(observed[1].contributor.plan_restore)
+        assert.is_function(observed[1].contributor.restore)
+        assert.are.equal('after_layout', observed[1].contributor.restore_phase)
+        assert.are.same({ 'arboretum', 'consulate', 'laboratory' }, observed[1].contributor.restore_after)
+        assert.are.equal('terminal_manager', observed[2].name)
+        assert.is_nil(observed[2].contributor.capture)
+        assert.is_function(observed[2].contributor.plan_restore)
+        assert.is_function(observed[2].contributor.restore)
+    end)
+
+    it('does not fail setup when continuity.nvim rejects session contributor registration', function()
+        local original_session = package.loaded.continuity
+
+        package.loaded.continuity = {
+            api = {
+                register_contributor = function()
+                    error('duplicate contributor')
+                end,
+            },
+        }
+
+        local ok, err, notifications = with_notifications(function()
+            setup_terminalia()
+        end)
+
+        package.loaded.continuity = original_session
+
+        assert.is_true(ok, err)
+        assert.matches('Failed to register Terminalia session contributor', notifications[1], 1, true)
     end)
 
     it('captures Terminalia buffers for session contributors without requiring a visible window', function()
@@ -194,16 +223,79 @@ describe('terminalia', function()
 
         assert.are.equal(0, #vim.fn.win_findbuf(terminal_buffer))
         assert.are.equal(context.id, captured.current_context_id)
-        assert.are.equal(1, captured.version)
-        assert.are.equal(state_file, captured.state_ref.state_file)
-        assert.are.equal(1, #captured.terminal_ids)
-        assert.are.equal(terminal.id, captured.terminal_ids[1])
-        assert.is_nil(captured.terminals)
+        assert.are.equal(2, captured.version)
+        assert.is_nil(captured.state_ref)
+        assert.is_nil(captured.terminal_ids)
+        assert.are.equal(1, #captured.terminals)
+        assert.are.equal(terminal.id, captured.terminals[1].id)
+        assert.are.equal(terminal.instance_id, captured.terminals[1].instance_id)
+        assert.is_true(captured.terminals[1].restart)
+        assert.are.equal(2, #captured.contexts)
+
+        plugin.api.update(terminal.id, {
+            name = 'newer-build',
+            cwd = '/tmp/newer-workspace',
+        })
 
         local steps = plugin.api.session_plan_restore(captured)
         assert.are.equal(cwd, steps[1].payload.terminals[1].cwd)
+        assert.are.equal('build', steps[1].payload.terminals[1].name)
         assert.are.equal(context.id, steps[1].payload.terminals[1].context_id)
         assert.is_true(vim.startswith(steps[1].payload.terminals[1].uri, 'terminalia://'))
+    end)
+
+    it('captures disposable terminal restart policy explicitly', function()
+        local plugin = require('terminalia')
+        local terminal = plugin.api.create({
+            name = 'scratch',
+            disposable = true,
+        })
+        local bufnr = vim.api.nvim_create_buf(true, false)
+
+        plugin.api.update(terminal.id, {
+            bufnr = bufnr,
+        })
+
+        local captured = plugin.api.session_capture()
+        local steps = plugin.api.session_plan_restore(captured)
+
+        assert.are.equal(1, #captured.terminals)
+        assert.is_true(captured.terminals[1].disposable)
+        assert.is_true(captured.terminals[1].restart)
+        assert.is_true(steps[1].payload.terminals[1].restart)
+    end)
+
+    it('bounds embedded Continuity capture payloads', function()
+        local plugin = require('terminalia')
+
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_terminals = false,
+            state_file = state_file,
+        })
+
+        local terminal = plugin.api.create({
+            name = 'oversized',
+            env = {
+                OVERSIZED = string.rep('x', 600 * 1024),
+            },
+        })
+        local bufnr = vim.api.nvim_create_buf(true, false)
+        plugin.api.update(terminal.id, {
+            bufnr = bufnr,
+        })
+
+        local captured
+        local ok, err, notifications = with_notifications(function()
+            captured = plugin.api.session_capture()
+        end)
+
+        assert.is_true(ok, err)
+        assert.are.equal(2, captured.version)
+        assert.are.same({}, captured.terminals)
+        assert.is_true(#vim.json.encode(captured) <= 512 * 1024)
+        assert.matches('keep capture data bounded', notifications[1], 1, true)
     end)
 
     it('does not turn restored terminal metadata into Continuity restore payloads', function()
@@ -218,11 +310,71 @@ describe('terminalia', function()
         local captured = plugin.api.session_capture()
         local steps = plugin.api.session_plan_restore(captured)
 
-        assert.are.equal(0, #captured.terminal_ids)
+        assert.are.equal(0, #captured.terminals)
         assert.are.equal(0, #steps)
     end)
 
-    it('builds restore-plan steps for terminal buffer records without window reopen semantics', function()
+    it('skips malformed terminal records when planning session restore', function()
+        local plugin = require('terminalia')
+        local terminal = plugin.api.create({
+            name = 'build',
+        })
+        local bufnr = vim.api.nvim_create_buf(true, false)
+
+        plugin.api.update(terminal.id, {
+            bufnr = bufnr,
+            name = {},
+        })
+
+        local captured
+        local steps
+        local ok, err, notifications = with_notifications(function()
+            captured = plugin.api.session_capture()
+            steps = plugin.api.session_plan_restore(captured)
+        end)
+
+        assert.is_true(ok, err)
+        assert.are.same({}, captured.terminals)
+        assert.are.equal(0, #steps)
+        assert.matches('Skipped Terminalia session terminal with invalid URI data', notifications[1], 1, true)
+    end)
+
+    it('falls back to manual restore for non-host contexts without reopenable terminal records', function()
+        local plugin = require('terminalia')
+
+        local steps = plugin.api.session_plan_restore({
+            version = 1,
+            current_context_id = 'context:remote',
+            terminal_ids = { 'terminal:missing' },
+        })
+
+        assert.are.equal(1, #steps)
+        assert.are.equal('continuity.manual_restore', steps[1].kind)
+        assert.is_true(steps[1].manual)
+        assert.are.equal('context:remote', steps[1].payload.current_context_id)
+    end)
+
+    it('skips invalid terminal references when planning session restore', function()
+        local plugin = require('terminalia')
+        local original_get = plugin.api.get
+
+        plugin.api.get = function()
+            return 'not-a-terminal-record'
+        end
+
+        local ok, steps = pcall(plugin.api.session_plan_restore, {
+            version = 1,
+            current_context_id = 'context:host',
+            terminal_ids = { 'terminal:1' },
+        })
+
+        plugin.api.get = original_get
+
+        assert.is_true(ok, steps)
+        assert.are.equal(0, #steps)
+    end)
+
+    it('does not dereference mutable persistence from version-1 session captures', function()
         local plugin = require('terminalia')
 
         write_persisted_terminal_state(state_file, {
@@ -254,7 +406,7 @@ describe('terminalia', function()
 
         local steps = plugin.api.session_plan_restore({
             version = 1,
-            current_context_id = 'context:remote',
+            current_context_id = 'context:host',
             state_ref = {
                 kind = 'terminalia.persistence',
                 state_file = state_file,
@@ -262,11 +414,81 @@ describe('terminalia', function()
             terminal_ids = { 'terminal:1' },
         })
 
+        assert.are.same({}, steps)
+    end)
+
+    it('does not let an old capture adopt a newer terminal that reused its id', function()
+        local plugin = require('terminalia')
+        local live = plugin.api.create({
+            name = 'same',
+            cwd = '/tmp/same',
+            created_at = 100,
+            instance_id = 'new-instance',
+        })
+
+        local steps = plugin.api.session_plan_restore({
+            version = 2,
+            current_context_id = 'context:host',
+            contexts = {
+                {
+                    id = 'context:host',
+                    kind = 'host',
+                    label = 'Host',
+                    metadata = {},
+                    created_at = 0,
+                },
+            },
+            terminals = {
+                {
+                    id = live.id,
+                    uri = 'terminalia://terminal/terminal:1',
+                    name = live.name,
+                    namespace = live.namespace,
+                    cwd = live.cwd,
+                    context_id = 'context:host',
+                    preferred_view = live.preferred_view,
+                    disposable = false,
+                    status = 'registered',
+                    created_at = 100,
+                    instance_id = 'old-instance',
+                    restart = false,
+                },
+            },
+        })
+        local restored = plugin.api.session_restore(steps[1])
+
+        assert.are.equal('new-instance', assert(plugin.api.get(live.id)).instance_id)
+        assert.are.equal(1, #restored)
+        assert.are_not.equal(live.id, restored[1].id)
+        assert.are.equal('old-instance', restored[1].instance_id)
+        assert.are.equal(live.name, restored[1].name)
+        assert.are.equal(2, #plugin.api.list())
+    end)
+
+    it('plans restore steps for legacy terminal-manager contributor payloads', function()
+        local plugin = require('terminalia')
+
+        local steps = plugin.api.session_plan_restore({
+            current_context_id = 'context:host',
+            terminals = {
+                {
+                    id = 'terminal:legacy',
+                    uri = 'terminal-manager://terminal/contexts/host/Host/context:host/terminal/terminal:legacy/build',
+                    name = 'build',
+                    namespace = 'workspace',
+                    preferred_view = 'float',
+                    disposable = false,
+                },
+            },
+        })
+
         assert.are.equal(1, #steps)
-        assert.are.equal('terminalia.restore_terminal_buffers', steps[1].kind)
-        assert.is_true(vim.startswith(steps[1].payload.terminals[1].uri, 'terminalia://terminal/'))
-        assert.matches('terminal:1', steps[1].payload.terminals[1].uri, 1, true)
-        assert.are.equal('/tmp/workspace', steps[1].payload.terminals[1].cwd)
+        assert.are.equal('terminalia.reopen_terminals', steps[1].kind)
+        assert.are.equal('terminal:legacy', steps[1].payload.terminals[1].id)
+        assert.are.equal(
+            'terminal-manager://terminal/contexts/host/Host/context:host/terminal/terminal:legacy/build',
+            steps[1].payload.terminals[1].uri
+        )
     end)
 
     it('restores Terminalia session records without opening windows', function()
@@ -309,6 +531,157 @@ describe('terminalia', function()
         assert.are.equal('/tmp/workspace', restored[1].cwd)
         assert.are.equal('registered', restored[1].status)
         assert.are.equal('float', restored[1].preferred_view)
+    end)
+
+    it('replays reopen-terminal restore steps in order with preferred views', function()
+        local plugin = require('terminalia')
+        local original_open_uri = plugin.api.open_uri
+        local calls = {}
+
+        plugin.api.open_uri = function(uri_value, opts)
+            table.insert(calls, {
+                uri = uri_value,
+                view = opts and opts.view or nil,
+            })
+            return {
+                id = string.format('opened:%d', #calls),
+                uri = uri_value,
+            }
+        end
+
+        local ok, reopened = pcall(plugin.api.session_restore, {
+            kind = 'terminalia.reopen_terminals',
+            payload = {
+                terminals = {
+                    {
+                        uri = 'terminalia://terminal/terminal:one/one',
+                        preferred_view = 'float',
+                    },
+                    {
+                        uri = 'terminalia://terminal/terminal:two/two',
+                        preferred_view = 'split',
+                    },
+                },
+            },
+        })
+
+        plugin.api.open_uri = original_open_uri
+
+        assert.is_true(ok, reopened)
+        assert.are.equal(2, #reopened)
+        assert.are.same({
+            {
+                uri = 'terminalia://terminal/terminal:one/one',
+                view = 'float',
+            },
+            {
+                uri = 'terminalia://terminal/terminal:two/two',
+                view = 'split',
+            },
+        }, calls)
+        assert.are.equal('opened:1', reopened[1].id)
+        assert.are.equal('opened:2', reopened[2].id)
+    end)
+
+    it('replays legacy terminal-manager restore steps', function()
+        local plugin = require('terminalia')
+        local original_open_uri = plugin.api.open_uri
+        local calls = {}
+
+        plugin.api.open_uri = function(uri_value, opts)
+            table.insert(calls, {
+                uri = uri_value,
+                view = opts and opts.view or nil,
+            })
+            return {
+                id = string.format('opened:%d', #calls),
+            }
+        end
+
+        local ok, reopened = pcall(plugin.api.session_restore, {
+            kind = 'terminal_manager.reopen_terminals',
+            payload = {
+                terminals = {
+                    {
+                        uri = 'terminal-manager://terminal/contexts/host/Host/context:host/terminal/terminal:one/one',
+                        preferred_view = 'float',
+                    },
+                },
+            },
+        })
+
+        plugin.api.open_uri = original_open_uri
+
+        assert.is_true(ok, reopened)
+        assert.are.equal(1, #reopened)
+        assert.are.same({
+            {
+                uri = 'terminal-manager://terminal/contexts/host/Host/context:host/terminal/terminal:one/one',
+                view = 'float',
+            },
+        }, calls)
+    end)
+
+    it('handles invalid session restore steps and payloads explicitly', function()
+        local plugin = require('terminalia')
+        local original_open_uri = plugin.api.open_uri
+        local calls = {}
+
+        plugin.api.open_uri = function(uri_value, opts)
+            table.insert(calls, {
+                uri = uri_value,
+                view = opts and opts.view or nil,
+            })
+            return {
+                uri = uri_value,
+            }
+        end
+
+        local nil_ok, nil_err = pcall(plugin.api.session_restore, nil)
+        local unsupported_ok, unsupported_err = pcall(plugin.api.session_restore, {})
+        local missing_payload_ok, missing_payload_restored = pcall(plugin.api.session_restore, {
+            kind = 'terminalia.reopen_terminals',
+        })
+        local malformed_payload_ok, malformed_payload_restored = pcall(plugin.api.session_restore, {
+            kind = 'terminalia.restore_terminal_buffers',
+            payload = {
+                terminals = 'bad',
+            },
+        })
+        local mixed_payload_ok, mixed_payload_restored = pcall(plugin.api.session_restore, {
+            kind = 'terminalia.reopen_terminals',
+            payload = {
+                terminals = {
+                    false,
+                    {
+                        preferred_view = 'split',
+                    },
+                    {
+                        uri = 'terminalia://terminal/terminal:ok/ok',
+                        preferred_view = 'float',
+                    },
+                },
+            },
+        })
+
+        plugin.api.open_uri = original_open_uri
+
+        assert.is_false(nil_ok)
+        assert.matches('Invalid Terminalia restore step: expected table', nil_err, 1, true)
+        assert.is_false(unsupported_ok)
+        assert.matches('Unsupported Terminalia restore step: nil', unsupported_err, 1, true)
+        assert.is_true(missing_payload_ok, missing_payload_restored)
+        assert.are.same({}, missing_payload_restored)
+        assert.is_true(malformed_payload_ok, malformed_payload_restored)
+        assert.are.same({}, malformed_payload_restored)
+        assert.is_true(mixed_payload_ok, mixed_payload_restored)
+        assert.are.equal(1, #mixed_payload_restored)
+        assert.are.same({
+            {
+                uri = 'terminalia://terminal/terminal:ok/ok',
+                view = 'float',
+            },
+        }, calls)
     end)
 
     it('adopts and starts visible restored Terminalia URI buffers in place', function()
@@ -359,6 +732,7 @@ describe('terminalia', function()
         assert.are.equal(bufnr, restored[1].bufnr)
         assert.are.equal(bufnr, vim.api.nvim_win_get_buf(0))
         assert.are.equal('terminal:visible', vim.b[bufnr].terminalia_id)
+        assert.are.equal('terminal:visible', vim.b[bufnr].terminal_manager_id)
         assert.are.equal('running', restored[1].status)
     end)
 
@@ -396,7 +770,62 @@ describe('terminalia', function()
         assert.are.equal(bufnr, adopted.bufnr)
         assert.are.equal('running', adopted.status)
         assert.are.equal(terminal.id, vim.b[bufnr].terminalia_id)
+        assert.are.equal(terminal.id, vim.b[bufnr].terminal_manager_id)
         assert.is_false(vim.bo[bufnr].swapfile)
+    end)
+
+    it('replaces a restored URI buffer in the non-current window that displays it', function()
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
+        local current_win = vim.api.nvim_get_current_win()
+        local current_buf = vim.api.nvim_create_buf(true, true)
+        local replacement = vim.api.nvim_create_buf(true, true)
+        local obsolete = vim.api.nvim_create_buf(true, true)
+        local terminal = plugin.api.create({
+            name = 'existing',
+        })
+
+        plugin.api.update(terminal.id, {
+            bufnr = replacement,
+        })
+        vim.api.nvim_win_set_buf(current_win, current_buf)
+        vim.cmd('vsplit')
+        local uri_win = vim.api.nvim_get_current_win()
+        vim.api.nvim_win_set_buf(uri_win, obsolete)
+        vim.api.nvim_buf_set_name(obsolete, uri.encode_terminal_uri(terminal))
+        vim.api.nvim_set_current_win(current_win)
+
+        local adopted = plugin.api.adopt_uri_buffer(obsolete)
+
+        assert.are.equal(terminal.id, adopted.id)
+        assert.are.equal(current_buf, vim.api.nvim_win_get_buf(current_win))
+        assert.are.equal(replacement, vim.api.nvim_win_get_buf(uri_win))
+        assert.is_false(vim.api.nvim_buf_is_valid(obsolete))
+    end)
+
+    it('adopts a hidden restored URI buffer without changing the current window', function()
+        local plugin = require('terminalia')
+        local uri = require('terminalia.uri')
+        local current_win = vim.api.nvim_get_current_win()
+        local current_buf = vim.api.nvim_create_buf(true, true)
+        local replacement = vim.api.nvim_create_buf(true, true)
+        local obsolete = vim.api.nvim_create_buf(true, true)
+        local terminal = plugin.api.create({
+            name = 'hidden',
+        })
+
+        plugin.api.update(terminal.id, {
+            bufnr = replacement,
+        })
+        vim.api.nvim_win_set_buf(current_win, current_buf)
+        vim.api.nvim_buf_set_name(obsolete, uri.encode_terminal_uri(terminal))
+
+        local adopted = plugin.api.adopt_uri_buffer(obsolete)
+
+        assert.are.equal(terminal.id, adopted.id)
+        assert.are.equal(current_buf, vim.api.nvim_win_get_buf(current_win))
+        assert.is_true(vim.api.nvim_buf_is_valid(replacement))
+        assert.is_false(vim.api.nvim_buf_is_valid(obsolete))
     end)
 
     it('adopts explicitly edited Terminalia history URI buffers in place', function()
@@ -422,9 +851,39 @@ describe('terminalia', function()
         assert.are.equal(history_uri, vim.api.nvim_buf_get_name(bufnr))
         assert.are.same({ 'alpha', 'beta' }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
         assert.are.equal('nofile', vim.bo[bufnr].buftype)
-        assert.are.equal('terminaliahistory', vim.bo[bufnr].filetype)
+        assert.are.equal('terminalmanagerhistory', vim.bo[bufnr].filetype)
         assert.is_false(vim.bo[bufnr].swapfile)
         assert.is_false(vim.bo[bufnr].modified)
+    end)
+
+    it('keeps legacy history filetype autocommands working', function()
+        local plugin = require('terminalia')
+        local history = require('terminalia.history')
+        local group = vim.api.nvim_create_augroup('terminalia-test-history-filetype', {
+            clear = true,
+        })
+        local fired = 0
+        local terminal = plugin.api.create({
+            name = 'build',
+        })
+
+        vim.api.nvim_create_autocmd('FileType', {
+            group = group,
+            pattern = 'terminalmanagerhistory',
+            callback = function(event)
+                if vim.b[event.buf].terminalia_history_view == true then
+                    fired = fired + 1
+                end
+            end,
+        })
+
+        history.append_chunks(terminal.id, { 'alpha', '' })
+        history.flush(terminal.id)
+        plugin.api.open_history(terminal.id)
+
+        assert.are.equal('terminalmanagerhistory', vim.bo.filetype)
+        assert.are.equal(1, fired)
+        pcall(vim.api.nvim_del_augroup_by_id, group)
     end)
 
     it('notifies continuity.nvim when Terminalia state changes', function()
@@ -681,7 +1140,108 @@ describe('terminalia', function()
         assert.are.equal('terminal%3A1.json', index.terminals[1].file)
         assert.is_nil(index.terminals[1].env)
         assert.are.equal('value', terminal.env.KEEP)
+        assert.are.equal('string', type(terminal.instance_id))
         assert.are.equal('devbox', context.metadata.host)
+    end)
+
+    it('atomically replaces persistence files from same-directory temporary files', function()
+        local plugin = require('terminalia')
+        local original_rename = vim.uv.fs_rename
+        local renames = {}
+
+        vim.uv.fs_rename = function(source, target)
+            table.insert(renames, {
+                source = source,
+                target = target,
+            })
+            return original_rename(source, target)
+        end
+
+        local ok, err = pcall(plugin.api.create, {
+            name = 'build',
+        })
+
+        vim.uv.fs_rename = original_rename
+
+        assert.is_true(ok, err)
+        assert.is_true(#renames >= 3)
+        for _, rename in ipairs(renames) do
+            assert.are.equal(vim.fn.fnamemodify(rename.target, ':h'), vim.fn.fnamemodify(rename.source, ':h'))
+            assert.matches('%.tmp%.', rename.source)
+        end
+    end)
+
+    it('keeps the previous fragmented record when atomic replacement fails', function()
+        local plugin = require('terminalia')
+        local terminal = plugin.api.create({
+            name = 'before',
+        })
+        local record_path =
+            vim.fs.joinpath(string.format('%s.d', state_file), 'terminals', record_filename(terminal.id))
+        local before = table.concat(vim.fn.readfile(record_path), '\n')
+        local original_rename = vim.uv.fs_rename
+
+        vim.uv.fs_rename = function(source, target)
+            if target == record_path then
+                return nil, 'replacement denied'
+            end
+            return original_rename(source, target)
+        end
+
+        local ok, err = pcall(plugin.api.update, terminal.id, {
+            name = 'after',
+        })
+
+        vim.uv.fs_rename = original_rename
+
+        assert.is_false(ok)
+        assert.matches('Failed to replace Terminalia persistence record', err, 1, true)
+        assert.matches('replacement denied', err, 1, true)
+        assert.are.equal(before, table.concat(vim.fn.readfile(record_path), '\n'))
+        assert.are.same({}, vim.fn.glob(record_path .. '.tmp.*', false, true))
+
+        plugin.api.clear({
+            wipe_storage = false,
+        })
+        setup_terminalia()
+
+        assert.are.equal('before', assert(plugin.api.get(terminal.id)).name)
+    end)
+
+    it('keeps the previous index and ignores orphan records when index replacement fails', function()
+        local plugin = require('terminalia')
+        plugin.api.create({
+            name = 'before',
+        })
+        local before = table.concat(vim.fn.readfile(state_file), '\n')
+        local original_rename = vim.uv.fs_rename
+
+        vim.uv.fs_rename = function(source, target)
+            if target == state_file then
+                return nil, 'index replacement denied'
+            end
+            return original_rename(source, target)
+        end
+
+        local ok, err = pcall(plugin.api.create, {
+            name = 'orphaned',
+        })
+
+        vim.uv.fs_rename = original_rename
+
+        assert.is_false(ok)
+        assert.matches('Failed to replace Terminalia persistence record', err, 1, true)
+        assert.matches('index replacement denied', err, 1, true)
+        assert.are.equal(before, table.concat(vim.fn.readfile(state_file), '\n'))
+        assert.are.same({}, vim.fn.glob(state_file .. '.tmp.*', false, true))
+
+        plugin.api.clear({
+            wipe_storage = false,
+        })
+        setup_terminalia()
+
+        assert.are.equal(1, #plugin.api.list())
+        assert.are.equal('before', assert(plugin.api.get('terminal:1')).name)
     end)
 
     it('reloads persisted terminals after clear resets setup persistence state', function()
@@ -758,6 +1318,132 @@ describe('terminalia', function()
         assert.are.equal('live', assert(plugin.api.get('terminal:2')).name)
         assert.are.equal(2, #plugin.api.list())
         assert.is_not_nil(plugin.api.get('terminal:1'))
+    end)
+
+    it('merges persisted contexts without invalidating live terminal bindings or selection', function()
+        local plugin = require('terminalia')
+
+        plugin.api.create_context({
+            id = 'context:persisted',
+            kind = 'remote',
+            label = 'Persisted',
+            parent_id = 'context:host',
+            metadata = {
+                host = 'persisted.example',
+            },
+        })
+        plugin.api.create({
+            name = 'persisted',
+            context_id = 'context:persisted',
+        })
+        plugin.api.clear({
+            wipe_storage = false,
+        })
+
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_terminals = false,
+            state_file = state_file,
+        })
+        plugin.api.create_context({
+            id = 'context:live',
+            kind = 'fixture',
+            label = 'Live',
+            parent_id = 'context:host',
+        })
+        plugin.api.set_current_context('context:live')
+        local live = plugin.api.create({
+            name = 'live',
+            context_id = 'context:live',
+        })
+
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_terminals = true,
+            state_file = state_file,
+        })
+
+        assert.are.equal('context:live', plugin.api.current_context().id)
+        assert.are.equal('context:live', assert(plugin.api.get(live.id)).context_id)
+        assert.is_not_nil(plugin.api.get_context('context:live'))
+        assert.is_not_nil(plugin.api.get_context('context:persisted'))
+
+        local persisted = vim.tbl_filter(function(terminal)
+            return terminal.name == 'persisted'
+        end, plugin.api.list())
+        assert.are.equal(1, #persisted)
+        assert.are.equal('context:persisted', persisted[1].context_id)
+    end)
+
+    it('remaps conflicting persisted contexts and their terminal bindings on merge', function()
+        local plugin = require('terminalia')
+
+        plugin.api.create_context({
+            id = 'context:shared',
+            kind = 'remote',
+            label = 'Persisted',
+            parent_id = 'context:host',
+            metadata = {
+                host = 'persisted.example',
+            },
+            created_at = 100,
+        })
+        plugin.api.create({
+            name = 'persisted',
+            context_id = 'context:shared',
+        })
+        plugin.api.clear({
+            wipe_storage = false,
+        })
+
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_terminals = false,
+            state_file = state_file,
+        })
+        plugin.api.create_context({
+            id = 'context:shared',
+            kind = 'fixture',
+            label = 'Live',
+            parent_id = 'context:host',
+            metadata = {
+                host = 'live.example',
+            },
+            created_at = 200,
+        })
+        plugin.api.set_current_context('context:shared')
+        local live = plugin.api.create({
+            name = 'live',
+            context_id = 'context:shared',
+        })
+
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_terminals = true,
+            state_file = state_file,
+        })
+
+        local imported_context
+        for _, context in ipairs(plugin.api.list_contexts()) do
+            if context.metadata.host == 'persisted.example' then
+                imported_context = context
+            end
+        end
+        local persisted = vim.tbl_filter(function(terminal)
+            return terminal.name == 'persisted'
+        end, plugin.api.list())
+
+        assert.are.equal('context:shared', plugin.api.current_context().id)
+        assert.are.equal('live.example', assert(plugin.api.get_context('context:shared')).metadata.host)
+        assert.are.equal('context:shared', assert(plugin.api.get(live.id)).context_id)
+        assert.is_not_nil(imported_context)
+        assert.are_not.equal('context:shared', imported_context.id)
+        assert.are.equal(1, #persisted)
+        assert.are.equal(imported_context.id, persisted[1].context_id)
     end)
 
     it('keeps in-memory terminals when merged persisted terminals reuse the same ids', function()
@@ -1242,6 +1928,68 @@ describe('terminalia', function()
 
         assert.are.same({ 'one', 'two' }, plugin.api.history_lines(terminal.id))
         assert.are.equal('one\ntwo', plugin.api.output(terminal.id).output)
+    end)
+
+    it('keeps live history and output aligned around blank lines', function()
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
+        local terminal = plugin.api.create({
+            name = 'build',
+        })
+        local live_output = ''
+        local original_output = runtime.output
+
+        runtime.output = function(id)
+            if id == terminal.id then
+                return live_output, true
+            end
+
+            return original_output(id)
+        end
+
+        local ok, err = pcall(function()
+            for _, value in ipairs({ 'one\n\ntwo', 'one\n\ntwo\n' }) do
+                live_output = value
+
+                local lines = plugin.api.history_lines(terminal.id)
+
+                assert.are.same({ 'one', '', 'two' }, lines)
+                assert.are.equal(table.concat(lines, '\n'), plugin.api.output(terminal.id).output)
+            end
+        end)
+
+        runtime.output = original_output
+
+        if not ok then
+            error(err)
+        end
+    end)
+
+    it('preserves blank and trailing live history snapshots', function()
+        local history = require('terminalia.history')
+
+        for _, live_output in ipairs({ 'one\n\ntwo', 'one\n\ntwo\n' }) do
+            assert.are.same(
+                { 'one', '', 'two' },
+                history.read_lines_with_live_output('terminal:live-blank', live_output)
+            )
+        end
+    end)
+
+    it('does not duplicate pending partial history when merging live output', function()
+        local plugin = require('terminalia')
+        local history = require('terminalia.history')
+
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_history = true,
+            state_file = state_file,
+        })
+
+        history.append_chunks('terminal:live-partial', { 'one', 'two' })
+
+        assert.are.same({ 'one', 'two' }, history.read_lines_with_live_output('terminal:live-partial', 'two'))
     end)
 
     it('reconstructs partial history chunks across callback boundaries', function()
@@ -1754,6 +2502,60 @@ describe('terminalia', function()
         assert.are.same({ 'ready' }, plugin.api.output_lines(terminal.id))
     end)
 
+    it('returns multi-line captured output as lines', function()
+        local plugin = require('terminalia')
+
+        local terminal = plugin.api.create({
+            name = 'echo',
+            command = { 'sh', '-lc', 'printf "one\\ntwo\\n"' },
+        })
+
+        plugin.api.start(terminal.id)
+        local exited = plugin.api.wait(terminal.id, 2000)
+        local output = plugin.api.output(terminal.id)
+        local output_lines = plugin.api.output_lines(terminal.id)
+
+        assert.are.equal('exited', assert(exited).status)
+        assert.are.equal('one\ntwo', output.output)
+        assert.are.same({ 'one', 'two' }, output_lines)
+        assert.are.same(plugin.api.history_lines(terminal.id), output_lines)
+        assert.are.equal(output.output, table.concat(output_lines, '\n'))
+    end)
+
+    it('keeps live unterminated output lines aligned with history views', function()
+        local plugin = require('terminalia')
+
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_history = false,
+            state_file = state_file,
+        })
+
+        local terminal = plugin.api.create({
+            name = 'echo',
+            command = { 'sh', '-lc', 'printf "one\\ntwo"; sleep 5' },
+        })
+
+        plugin.api.start(terminal.id)
+        vim.wait(1000, function()
+            return #plugin.api.history_lines(terminal.id) >= 2
+        end, 20)
+
+        local output = plugin.api.output(terminal.id)
+        local output_lines = plugin.api.output_lines(terminal.id)
+
+        assert.are.equal('one\ntwo', output.output)
+        assert.are.same({ 'one', 'two' }, output_lines)
+        assert.are.same(plugin.api.history_lines(terminal.id), output_lines)
+
+        plugin.api.open_history(terminal.id)
+
+        assert.are.same(output_lines, vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false))
+
+        plugin.api.kill(terminal.id)
+    end)
+
     it('returns live output even when history persistence is disabled', function()
         local plugin = require('terminalia')
 
@@ -2211,7 +3013,7 @@ describe('terminalia', function()
 
         local terminal = plugin.api.create({
             name = 'build',
-            command = { 'sh', '-lc', 'printf "alpha\\nbeta"; sleep 1' },
+            command = { 'sh', '-lc', 'printf "alpha\\nbeta"; sleep 5' },
         })
 
         plugin.api.open(terminal.id)
@@ -2244,9 +3046,11 @@ describe('terminalia', function()
         plugin.api.open_history(terminal.id)
 
         local history_bufnr = vim.api.nvim_get_current_buf()
+        local history_lines = vim.api.nvim_buf_get_lines(history_bufnr, 0, -1, false)
 
         assert.are.equal(uri.encode_history_uri(terminal), vim.api.nvim_buf_get_name(history_bufnr))
-        assert.are.same({ '' }, vim.api.nvim_buf_get_lines(history_bufnr, 0, -1, false))
+        assert.is_false(vim.tbl_contains(history_lines, '[no history captured]'))
+        assert.are.equal('', table.concat(history_lines, '\n'))
     end)
 
     it('rejects unknown ids for history line reads', function()
@@ -2785,6 +3589,32 @@ describe('terminalia', function()
         assert.are.equal(cwd, assert(plugin.api.get(terminal.id)).cwd)
     end)
 
+    it('updates cwd metadata from OSC 7 requests on legacy-managed buffers', function()
+        local plugin = require('terminalia')
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        local cwd = vim.fn.tempname()
+
+        vim.fn.mkdir(cwd, 'p')
+
+        local terminal = plugin.api.create({
+            name = 'shell',
+            cwd = '/tmp',
+        })
+
+        vim.b[bufnr].terminal_manager_id = terminal.id
+
+        vim.api.nvim_exec_autocmds('TermRequest', {
+            buffer = bufnr,
+            data = {
+                sequence = string.format('\027]7;file://%s\027\\', cwd),
+                terminator = '\027\\',
+                cursor = { 1, 1 },
+            },
+        })
+
+        assert.are.equal(cwd, assert(plugin.api.get(terminal.id)).cwd)
+    end)
+
     it('ignores OSC 7 requests for unmanaged buffers', function()
         local plugin = require('terminalia')
         local bufnr = vim.api.nvim_create_buf(false, true)
@@ -2872,6 +3702,118 @@ describe('terminalia', function()
         assert.are.same({ 'prompt' }, stripped)
     end)
 
+    it('updates cwd metadata from fallback markers embedded in normal output', function()
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
+        local cwd = vim.fn.tempname()
+
+        vim.fn.mkdir(cwd, 'p')
+
+        local terminal = plugin.api.create({
+            name = 'shell',
+            cwd = '/tmp',
+        })
+
+        local filtered = runtime._filter_cwd_fallback_chunks(terminal.id, {
+            'before\n__TERMINALIA_CWD__=' .. cwd .. '\nafter',
+        })
+
+        assert.are.equal(cwd, assert(plugin.api.get(terminal.id)).cwd)
+        assert.is_nil(table.concat(filtered, '\n'):find('__TERMINALIA_CWD__', 1, true))
+        assert.is_not_nil(table.concat(filtered, '\n'):find('before', 1, true))
+        assert.is_not_nil(table.concat(filtered, '\n'):find('after', 1, true))
+    end)
+
+    it('updates cwd metadata from fallback markers split across chunks', function()
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
+        local cwd = vim.fn.tempname()
+
+        vim.fn.mkdir(cwd, 'p')
+
+        local terminal = plugin.api.create({
+            name = 'shell',
+            cwd = '/tmp',
+        })
+
+        local first = runtime._filter_cwd_fallback_chunks(terminal.id, {
+            'prompt __TER',
+        })
+        local second = runtime._filter_cwd_fallback_chunks(terminal.id, {
+            'MINALIA_CWD__=' .. cwd,
+            'after',
+        })
+
+        assert.are.equal(cwd, assert(plugin.api.get(terminal.id)).cwd)
+        assert.is_nil((table.concat(first, '\n') .. table.concat(second, '\n')):find('__TERMINALIA_CWD__', 1, true))
+        assert.are.same({ 'prompt ' }, first)
+        assert.are.same({ '', 'after' }, second)
+    end)
+
+    it('does not persist fallback markers split after visible output', function()
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
+        local history = require('terminalia.history')
+        local cwd = vim.fn.tempname()
+
+        vim.fn.mkdir(cwd, 'p')
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_history = true,
+            state_file = state_file,
+        })
+
+        local terminal = plugin.api.create({
+            name = 'shell',
+            cwd = '/tmp',
+        })
+
+        history.append_chunks(
+            terminal.id,
+            runtime._filter_cwd_fallback_chunks(terminal.id, {
+                'prompt __TER',
+            })
+        )
+        history.append_chunks(
+            terminal.id,
+            runtime._filter_cwd_fallback_chunks(terminal.id, {
+                'MINALIA_CWD__=' .. cwd,
+                'done',
+                '',
+            })
+        )
+        history.flush(terminal.id)
+
+        assert.are.equal(cwd, assert(plugin.api.get(terminal.id)).cwd)
+        assert.are.same({ 'prompt ', 'done' }, plugin.api.history_lines(terminal.id))
+    end)
+
+    it('does not capture fallback markers as terminal output', function()
+        local plugin = require('terminalia')
+        local cwd = vim.fn.tempname()
+
+        vim.fn.mkdir(cwd, 'p')
+        plugin.setup({
+            history_dir = history_dir,
+            notify_on_exit = false,
+            persist_history = false,
+            state_file = state_file,
+        })
+
+        local terminal = plugin.api.create({
+            name = 'shell',
+            cwd = cwd,
+            command = { 'sh', '-lc', 'printf "ready\\n__TERMINALIA_CWD__=%s\\ndone\\n" "$PWD"' },
+        })
+
+        plugin.api.start(terminal.id)
+        plugin.api.wait(terminal.id, 2000)
+
+        assert.are.equal(cwd, assert(plugin.api.get(terminal.id)).cwd)
+        assert.are.same({ 'ready', 'done' }, plugin.api.output_lines(terminal.id))
+    end)
+
     it('ignores invalid shell-output cwd fallback markers', function()
         local plugin = require('terminalia')
         local runtime = require('terminalia.runtime.native')
@@ -2903,8 +3845,52 @@ describe('terminalia', function()
         assert.is_true(type(resolved[3]) == 'string' and resolved[3]:find('echo ready', 1, true) ~= nil)
     end)
 
-    it('does not wrap unsupported commands with cwd fallback marker emission', function()
+    it('preserves shell positional arguments when adding cwd fallback marker emission', function()
+        local plugin = require('terminalia')
         local runtime = require('terminalia.runtime.native')
+        plugin.setup({
+            emit_cwd_fallback_marker = true,
+        })
+        local resolved = runtime._resolve_command_with_fallback({ 'sh', '-c', 'printf "%s\\n" "$1"', 'arg0', 'value' })
+
+        assert.are.same('arg0', resolved[4])
+        assert.are.same('value', resolved[5])
+
+        local output = vim.fn.systemlist(resolved)
+
+        assert.are.equal(0, vim.v.shell_error)
+        assert.are.same('value', output[#output])
+    end)
+
+    it('does not wrap string shell commands with cwd fallback marker emission', function()
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
+        plugin.setup({
+            emit_cwd_fallback_marker = true,
+        })
+
+        assert.are.same(vim.o.shell, runtime._resolve_command_with_fallback(vim.o.shell))
+        assert.are.same('/bin/zsh -i', runtime._resolve_command_with_fallback('/bin/zsh -i'))
+    end)
+
+    it('does not wrap shell argv launches without command strings', function()
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
+        plugin.setup({
+            emit_cwd_fallback_marker = true,
+        })
+        local command = { 'sh', '-i' }
+        local resolved = runtime._resolve_command_with_fallback(command)
+
+        assert.are.same(command, resolved)
+    end)
+
+    it('does not wrap unsupported commands with cwd fallback marker emission', function()
+        local plugin = require('terminalia')
+        local runtime = require('terminalia.runtime.native')
+        plugin.setup({
+            emit_cwd_fallback_marker = true,
+        })
         local command = { 'python3', '-c', 'print("ready")' }
         local resolved = runtime._resolve_command_with_fallback(command)
 
@@ -3096,12 +4082,32 @@ describe('terminalia', function()
         assert.are.equal('Malformed Terminalia URI', err)
     end)
 
+    it('decodes legacy terminal-manager uri schemes', function()
+        local uri = require('terminalia.uri')
+
+        local decoded = assert(
+            uri.decode('terminal-manager://terminal/contexts/host/Host/context:host/terminal/terminal:legacy/build')
+        )
+
+        assert.are.equal('terminal', decoded.kind)
+        assert.are.equal('terminal:legacy', decoded.terminal_id)
+        assert.are.equal('build', decoded.name)
+        assert.are.equal('context:host', decoded.context_id)
+    end)
+
     it('rejects unknown Terminalia uris through the api', function()
         local plugin = require('terminalia')
+        local context = plugin.api.create_child_context(plugin.api.host_context().id, {
+            kind = 'remote_workspace',
+            label = 'devbox',
+        })
+
+        plugin.api.set_current_context(context.id)
 
         assert.has_error(function()
             plugin.api.open_uri('terminalia://terminal/contexts/host/Host/context:host/terminal/terminal:missing/build')
         end, 'Unknown terminal id: terminal:missing')
+        assert.are.equal(context.id, plugin.api.current_context().id)
     end)
 
     it('decodes context labels that contain the terminal marker literally', function()
@@ -3121,6 +4127,32 @@ describe('terminalia', function()
         assert.are.equal('terminal', decoded.context_stack[2].label)
     end)
 
+    it('decodes legacy context components that contain the terminal marker literally', function()
+        local uri = require('terminalia.uri')
+
+        local decoded =
+            assert(uri.decode('terminalia://terminal/contexts/terminal/terminal/terminal/terminal/terminal:1/build'))
+
+        assert.are.equal('terminal:1', decoded.terminal_id)
+        assert.are.same({ 'terminal' }, decoded.context_stack_ids)
+        assert.are.equal('terminal', decoded.context_stack[1].kind)
+        assert.are.equal('terminal', decoded.context_stack[1].label)
+        assert.are.equal('terminal', decoded.context_stack[1].id)
+    end)
+
+    it('decodes legacy context kinds that match the context marker literally', function()
+        local uri = require('terminalia.uri')
+
+        local decoded =
+            assert(uri.decode('terminalia://terminal/contexts/context/Context/context:legacy/terminal/terminal/build'))
+
+        assert.are.equal('terminal', decoded.terminal_id)
+        assert.are.same({ 'context:legacy' }, decoded.context_stack_ids)
+        assert.are.equal('context', decoded.context_stack[1].kind)
+        assert.are.equal('Context', decoded.context_stack[1].label)
+        assert.are.equal('context:legacy', decoded.context_stack[1].id)
+    end)
+
     it('completes cwd prefixes for quoted namespaces', function()
         local plugin = require('terminalia')
         local commands = vim.api.nvim_get_commands({})
@@ -3136,10 +4168,18 @@ describe('terminalia', function()
             namespace = 'workspace team',
             cwd = '/tmp/workspace dir',
         })
+        plugin.api.create({
+            name = 'team',
+            namespace = 'team space',
+            cwd = '/tmp/team space',
+        })
 
         assert.are.same({
             '/tmp/workspace dir',
         }, commands.TerminaliaList.complete('/tmp/w', [[TerminaliaList "workspace team" /tmp/w]], 0))
+        assert.are.same({
+            '/tmp/team space',
+        }, commands.TerminaliaList.complete('/tmp', [[TerminaliaList "team space" /tmp]], 0))
     end)
 
     it('does not guess completion state from stray quote text', function()

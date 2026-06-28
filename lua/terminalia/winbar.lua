@@ -127,7 +127,7 @@ end
 ---@param bufnr integer
 ---@return terminalia.TerminalRecord?
 local function terminal_for_buffer(bufnr)
-    local terminal_id = vim.b[bufnr].terminalia_id
+    local terminal_id = vim.b[bufnr].terminalia_id or vim.b[bufnr].terminal_manager_id
 
     if type(terminal_id) ~= 'string' then
         return nil

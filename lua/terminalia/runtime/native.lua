@@ -32,6 +32,8 @@ local buffer_helper
 local visible_windows_for_buffer
 ---@type table<string, table<string, terminalia.TerminalActionStripState>>
 local action_strip_state = {}
+---@type table<string, table<string, { pending: string }>>
+local cwd_fallback_state = {}
 ---@type table<string, string[]>
 local launch_cleanup_paths = {}
 ---@type table<string, string[]>
@@ -198,21 +200,17 @@ end
 ---@param command string|string[]
 ---@return boolean
 local function supports_shell_cwd_fallback(command)
-    if type(command) == 'string' then
-        return false
-    end
-
     if type(command) ~= 'table' or type(command[1]) ~= 'string' then
-        return false
-    end
-
-    if #command == 1 then
         return false
     end
 
     local executable = vim.fs.basename(command[1])
 
-    return executable == 'sh' or executable == 'bash' or executable == 'zsh'
+    if executable ~= 'sh' and executable ~= 'bash' and executable ~= 'zsh' then
+        return false
+    end
+
+    return command[2] == '-lc' or command[2] == '-c'
 end
 
 ---@param command string|string[]
@@ -224,25 +222,9 @@ local function with_shell_cwd_fallback(command)
 
     local marker = 'printf \'__TERMINALIA_CWD__=%s\\n\' "$PWD"'
 
-    if type(command) == 'string' then
-        return string.format('%s -lc %q', command, marker .. '; exec "$SHELL" -i')
-    end
-
     local wrapped = vim.deepcopy(command)
-    local command_string = table.concat(vim.list_slice(wrapped, 2), ' ')
-
-    if command_string == '' then
-        wrapped[2] = '-lc'
-        wrapped[3] = marker .. '; exec "$SHELL" -i'
-        return wrapped
-    end
-
-    if wrapped[2] == '-lc' or wrapped[2] == '-c' then
-        wrapped[3] = marker .. '; ' .. (wrapped[3] or '')
-        return wrapped
-    end
-
-    return command
+    wrapped[3] = marker .. '; ' .. (wrapped[3] or '')
+    return wrapped
 end
 
 ---@param terminal terminalia.TerminalRecord
@@ -299,65 +281,101 @@ local function parse_cwd_fallback_line(line)
     return directory
 end
 
----@param chunk string
----@return string?
-local function strip_cwd_fallback_chunk(chunk)
-    if type(chunk) ~= 'string' or not vim.startswith(chunk, cwd_fallback_prefix) then
-        return chunk
+---@param terminal_id string?
+---@param line string
+---@return string
+local function filter_cwd_fallback_line(terminal_id, line)
+    local marker_start = line:find(cwd_fallback_prefix, 1, true)
+
+    if marker_start == nil then
+        return line
     end
 
-    local line_end = chunk:find('[\r\n]')
+    local directory = parse_cwd_fallback_line(line:sub(marker_start))
 
-    if line_end == nil then
-        return ''
+    if terminal_id ~= nil and directory ~= nil then
+        registry.update(terminal_id, {
+            cwd = directory,
+        })
     end
 
-    while line_end <= #chunk do
-        local char = chunk:sub(line_end, line_end)
-
-        if char ~= '\r' and char ~= '\n' then
-            break
-        end
-
-        line_end = line_end + 1
-    end
-
-    return chunk:sub(line_end)
+    return line:sub(1, marker_start - 1)
 end
 
----@param terminal_id string
----@param data string[]?
-local function apply_cwd_fallback_chunks(terminal_id, data)
-    if type(data) ~= 'table' or registry.get(terminal_id) == nil then
-        return
+---@param tail string
+---@return string visible_tail
+---@return string? held_tail
+local function split_cwd_fallback_tail(tail)
+    if tail == '' then
+        return tail, nil
     end
 
-    for _, chunk in ipairs(data) do
-        local directory = parse_cwd_fallback_line(chunk)
+    for index = 1, #tail do
+        local suffix = tail:sub(index)
 
-        if directory ~= nil then
-            registry.update(terminal_id, {
-                cwd = directory,
-            })
+        if vim.startswith(cwd_fallback_prefix, suffix) or vim.startswith(suffix, cwd_fallback_prefix) then
+            return tail:sub(1, index - 1), suffix
         end
     end
+
+    return tail, nil
 end
 
+---@param terminal_id string?
 ---@param data string[]?
+---@param state { pending: string }
 ---@return string[]?
-local function strip_cwd_fallback_chunks(data)
+local function filter_cwd_fallback_chunks(terminal_id, data, state)
     if type(data) ~= 'table' then
         return data
     end
 
-    local filtered = {}
+    if terminal_id ~= nil and registry.get(terminal_id) == nil then
+        return data
+    end
 
     for _, chunk in ipairs(data) do
-        local stripped = strip_cwd_fallback_chunk(chunk)
-
-        if stripped ~= '' then
-            table.insert(filtered, stripped)
+        if type(chunk) ~= 'string' then
+            return data
         end
+    end
+
+    local raw = state.pending or ''
+    state.pending = ''
+
+    for index, chunk in ipairs(data) do
+        if index > 1 then
+            raw = raw .. '\n'
+        end
+
+        raw = raw .. chunk
+    end
+
+    local filtered = {}
+    local line_start = 1
+    local index = 1
+
+    while index <= #raw do
+        local char = raw:sub(index, index)
+
+        if char == '\r' or char == '\n' then
+            table.insert(filtered, filter_cwd_fallback_line(terminal_id, raw:sub(line_start, index - 1)))
+
+            if char == '\r' and raw:sub(index + 1, index + 1) == '\n' then
+                index = index + 1
+            end
+
+            line_start = index + 1
+        end
+
+        index = index + 1
+    end
+
+    local tail, held_tail = split_cwd_fallback_tail(raw:sub(line_start))
+    state.pending = held_tail or ''
+
+    if held_tail == nil or #filtered > 0 or tail ~= '' then
+        table.insert(filtered, tail)
     end
 
     return filtered
@@ -460,6 +478,24 @@ local function clear_action_strip_state(terminal_id)
     action_strip_state[terminal_id] = nil
 end
 
+---@param terminal_id string
+local function clear_cwd_fallback_state(terminal_id)
+    cwd_fallback_state[terminal_id] = nil
+end
+
+---@param terminal_id string
+---@param stream_name string
+---@return { pending: string }
+local function cwd_fallback_state_for(terminal_id, stream_name)
+    cwd_fallback_state[terminal_id] = cwd_fallback_state[terminal_id] or {}
+    cwd_fallback_state[terminal_id][stream_name] = cwd_fallback_state[terminal_id][stream_name]
+        or {
+            pending = '',
+        }
+
+    return cwd_fallback_state[terminal_id][stream_name]
+end
+
 ---@param launch terminalia.PreparedShellLaunch?
 local function cleanup_launch(launch)
     if type(launch) ~= 'table' or type(launch.cleanup_paths) ~= 'table' then
@@ -501,6 +537,12 @@ local function action_strip_state_for(terminal_id, stream_name)
     return action_strip_state[terminal_id][stream_name]
 end
 
+---@param bufnr integer
+---@return string?
+local function buffer_terminal_id(bufnr)
+    return vim.b[bufnr].terminalia_id or vim.b[bufnr].terminal_manager_id
+end
+
 ---Register runtime autocmds once.
 function M.ensure_autocmds()
     if autocmds_registered then
@@ -515,7 +557,7 @@ function M.ensure_autocmds()
         group = group,
         desc = 'Update Terminalia cwd metadata from OSC 7 requests',
         callback = function(event)
-            local terminal_id = vim.b[event.buf].terminalia_id
+            local terminal_id = buffer_terminal_id(event.buf)
 
             if terminal_id == nil then
                 return
@@ -549,7 +591,7 @@ function M.ensure_autocmds()
         callback = function(event)
             local bufnr = event.buf or vim.api.nvim_get_current_buf()
 
-            if vim.b[bufnr].terminalia_id ~= nil then
+            if buffer_terminal_id(bufnr) ~= nil then
                 require('terminalia.winbar').install(bufnr)
             end
         end,
@@ -670,8 +712,11 @@ function M.ensure_started(terminal)
                     return
                 end
 
-                apply_cwd_fallback_chunks(start_terminal.id, data)
-                data = strip_cwd_fallback_chunks(data)
+                data = filter_cwd_fallback_chunks(
+                    start_terminal.id,
+                    data,
+                    cwd_fallback_state_for(start_terminal.id, 'stdout')
+                )
                 data = action_protocol.strip_action_chunks(data, action_strip_state_for(start_terminal.id, 'stdout'))
                 if config.get().persist_history ~= true then
                     output_helper.append_output(start_terminal.id, data)
@@ -683,8 +728,11 @@ function M.ensure_started(terminal)
                     return
                 end
 
-                apply_cwd_fallback_chunks(start_terminal.id, data)
-                data = strip_cwd_fallback_chunks(data)
+                data = filter_cwd_fallback_chunks(
+                    start_terminal.id,
+                    data,
+                    cwd_fallback_state_for(start_terminal.id, 'stderr')
+                )
                 data = action_protocol.strip_action_chunks(data, action_strip_state_for(start_terminal.id, 'stderr'))
                 if config.get().persist_history ~= true then
                     output_helper.append_output(start_terminal.id, data)
@@ -698,6 +746,7 @@ function M.ensure_started(terminal)
                     return
                 end
 
+                clear_cwd_fallback_state(start_terminal.id)
                 local exited_terminal = registry.get(start_terminal.id)
 
                 history.flush(start_terminal.id)
@@ -887,9 +936,23 @@ function M.exited_terminal(id)
 end
 
 ---@param id string
+---@return boolean
+function M.finalize_disposable(id)
+    local finalized = output_helper.finalize_disposable(id)
+
+    if finalized then
+        clear_action_strip_state(id)
+        clear_cwd_fallback_state(id)
+    end
+
+    return finalized
+end
+
+---@param id string
 function M.forget_exited_terminal(id)
     output_helper.forget_exited_terminal(id)
     clear_action_strip_state(id)
+    clear_cwd_fallback_state(id)
 end
 
 ---@param id string
@@ -898,6 +961,7 @@ function M.release_exited_terminal(id)
     local released = output_helper.release_exited_terminal(id)
 
     clear_action_strip_state(id)
+    clear_cwd_fallback_state(id)
 
     return released
 end
@@ -907,6 +971,7 @@ end
 function M.clear_output(id)
     output_helper.clear_output(id)
     clear_action_strip_state(id)
+    clear_cwd_fallback_state(id)
 end
 
 ---Clear all live runtime output state.
@@ -944,6 +1009,9 @@ function M.clear()
     for key in pairs(action_strip_state) do
         action_strip_state[key] = nil
     end
+    for key in pairs(cwd_fallback_state) do
+        cwd_fallback_state[key] = nil
+    end
     for key in pairs(launch_cleanup_paths) do
         cleanup_launch_paths(key)
     end
@@ -953,13 +1021,31 @@ end
 ---@param terminal_id string
 ---@param data string[]?
 function M._apply_cwd_fallback_chunks(terminal_id, data)
-    apply_cwd_fallback_chunks(terminal_id, data)
+    filter_cwd_fallback_chunks(terminal_id, data, cwd_fallback_state_for(terminal_id, 'test'))
 end
 
 ---@param data string[]?
 ---@return string[]?
 function M._strip_cwd_fallback_chunks(data)
-    return strip_cwd_fallback_chunks(data)
+    local filtered = filter_cwd_fallback_chunks(nil, data, {
+        pending = '',
+    })
+    local compact = {}
+
+    for _, chunk in ipairs(filtered or {}) do
+        if chunk ~= '' then
+            table.insert(compact, chunk)
+        end
+    end
+
+    return compact
+end
+
+---@param terminal_id string
+---@param data string[]?
+---@return string[]?
+function M._filter_cwd_fallback_chunks(terminal_id, data)
+    return filter_cwd_fallback_chunks(terminal_id, data, cwd_fallback_state_for(terminal_id, 'test'))
 end
 
 ---@param command string|string[]
@@ -1007,6 +1093,7 @@ vim.api.nvim_create_autocmd({ 'BufHidden', 'BufWipeout', 'WinClosed' }, {
 
                 if finalized then
                     clear_action_strip_state(id)
+                    clear_cwd_fallback_state(id)
                 end
             end
         end

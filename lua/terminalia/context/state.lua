@@ -117,6 +117,12 @@ function M.create(opts)
     }
 
     state.contexts[context.id] = context
+
+    local numeric_suffix = tonumber(context.id:match('^context:(%d+)$'))
+    if numeric_suffix ~= nil then
+        state.next_id = math.max(state.next_id, numeric_suffix + 1)
+    end
+
     return context
 end
 
@@ -200,6 +206,31 @@ local function compute_next_id()
     return next_id
 end
 
+---@param context terminalia.TerminalContext
+---@return terminalia.PersistedContext
+local function persisted_context(context)
+    return {
+        id = context.id,
+        kind = context.kind,
+        label = context.label,
+        parent_id = context.parent_id,
+        metadata = normalize_metadata(context.metadata) or {},
+        created_at = context.created_at,
+    }
+end
+
+---@param reserved table<string, boolean>
+---@return string
+local function alloc_available_id(reserved)
+    while true do
+        local id = alloc_id()
+        if not reserved[id] then
+            reserved[id] = true
+            return id
+        end
+    end
+end
+
 ---Return a persistence snapshot for context state.
 ---@return { next_context_id: integer, current_context_id: string, contexts: terminalia.PersistedContext[] }
 function M.snapshot()
@@ -253,6 +284,87 @@ function M.restore_payload(payload)
     end
 
     state.next_id = math.max(tonumber(payload and payload.next_context_id) or 1, compute_next_id())
+end
+
+---Merge persisted contexts without replacing live context objects or selection.
+---Identical id collisions reuse the live context. Conflicting records receive a
+---fresh context id, and imported parent/terminal references can use the returned
+---old-to-new id mapping.
+---@param payload? { next_context_id?: integer, contexts?: terminalia.PersistedContext[] }
+---@return table<string, string>
+function M.merge_payload(payload)
+    ensure_host_context()
+
+    local items = {}
+    local reserved = {}
+    local mapping = {
+        [HOST_CONTEXT_ID] = HOST_CONTEXT_ID,
+    }
+
+    for id in pairs(state.contexts) do
+        reserved[id] = true
+    end
+
+    for _, item in ipairs(payload and payload.contexts or {}) do
+        if type(item) == 'table' and is_valid_id(item.id) and item.id ~= HOST_CONTEXT_ID then
+            table.insert(items, vim.deepcopy(item))
+            reserved[item.id] = true
+        end
+    end
+
+    for _, item in ipairs(items) do
+        local existing = state.contexts[item.id]
+        if existing == nil or vim.deep_equal(persisted_context(existing), persisted_context(restore_context(item))) then
+            mapping[item.id] = item.id
+        else
+            mapping[item.id] = alloc_available_id(reserved)
+        end
+    end
+
+    local changed = true
+    while changed do
+        changed = false
+        for _, item in ipairs(items) do
+            local existing = state.contexts[item.id]
+            local mapped_parent = item.parent_id ~= nil and mapping[item.parent_id] or nil
+            if
+                existing ~= nil
+                and mapping[item.id] == item.id
+                and mapped_parent ~= nil
+                and mapped_parent ~= item.parent_id
+            then
+                mapping[item.id] = alloc_available_id(reserved)
+                changed = true
+            end
+        end
+    end
+
+    local imported_ids = {}
+    for _, actual_id in pairs(mapping) do
+        imported_ids[actual_id] = true
+    end
+
+    for _, item in ipairs(items) do
+        local actual_id = mapping[item.id]
+        if state.contexts[actual_id] == nil then
+            local restored = vim.deepcopy(item)
+            restored.id = actual_id
+            if restored.parent_id ~= nil then
+                restored.parent_id = mapping[restored.parent_id] or restored.parent_id
+            end
+
+            if
+                restored.parent_id == nil
+                or state.contexts[restored.parent_id] ~= nil
+                or imported_ids[restored.parent_id]
+            then
+                state.contexts[actual_id] = restore_context(restored)
+            end
+        end
+    end
+
+    state.next_id = math.max(state.next_id, tonumber(payload and payload.next_context_id) or 1, compute_next_id())
+    return mapping
 end
 
 ---Clear in-memory context state back to the host context only.

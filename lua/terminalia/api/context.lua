@@ -99,6 +99,11 @@ function M.attach_ministry_terminal_context(ministry_terminal_id, terminal_id)
     return ministry_integration.attach_terminal_context(ministry_terminal_id, terminal_id, M.context_stack_for_terminal)
 end
 
+---@return table|nil, table|nil
+function M.setup_ministry_integration()
+    return ministry_integration.setup(M.context_stack, M.context_stack_for_terminal)
+end
+
 ---@param stack terminalia.TerminalContext[]
 ---@return terminalia.TerminalContext
 function M.restore_context_stack(stack)

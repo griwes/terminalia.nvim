@@ -115,9 +115,17 @@ function M.create(opts)
     local id = opts.id or alloc_id()
     model.assert_valid_id(id)
 
+    local context_id = opts.context_id
+
+    if context_id == nil then
+        context_id = contexts.current().id
+    elseif contexts.get(context_id) == nil then
+        error(string.format('Unknown terminal context id: %s', vim.inspect(context_id)))
+    end
+
     local terminal = model.new_terminal(vim.tbl_extend('force', opts, {
         id = id,
-        context_id = opts.context_id or contexts.current().id,
+        context_id = context_id,
     }))
 
     state.terminals[terminal.id] = terminal
@@ -240,9 +248,18 @@ function M.restore(opts)
     local payload = persistence.load()
     local collided = {}
     local next_id = merge and state.next_id or 1
-    contexts.restore_payload(payload)
+    local context_mapping = {}
+    if merge then
+        context_mapping = contexts.merge_payload(payload)
+    else
+        contexts.restore_payload(payload)
+    end
 
     for _, terminal in ipairs(payload.terminals) do
+        terminal = vim.deepcopy(terminal)
+        if merge and terminal.context_id ~= nil then
+            terminal.context_id = context_mapping[terminal.context_id] or terminal.context_id
+        end
         local terminal_id = parse_terminal_index(terminal.id)
 
         if state.terminals[terminal.id] == nil then

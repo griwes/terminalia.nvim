@@ -21,8 +21,8 @@ function M.open(terminal, lines, cfg)
     vim.bo[bufnr].bufhidden = 'wipe'
     vim.bo[bufnr].swapfile = false
     vim.bo[bufnr].modifiable = true
-    vim.bo[bufnr].filetype = 'terminaliahistory'
     vim.b[bufnr].terminalia_history_view = true
+    vim.bo[bufnr].filetype = 'terminalmanagerhistory'
     vim.bo[bufnr].modifiable = true
     vim.api.nvim_buf_set_name(
         bufnr,

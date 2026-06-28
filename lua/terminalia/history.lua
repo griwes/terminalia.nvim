@@ -32,6 +32,16 @@ local function append_lines(id, lines)
     vim.fn.writefile(lines, M.path(id), 'a')
 end
 
+---@param id string
+---@return string[]
+local function read_durable_lines(id)
+    if history_enabled() and vim.fn.filereadable(M.path(id)) == 1 then
+        return vim.fn.readfile(M.path(id))
+    end
+
+    return {}
+end
+
 ---@param chunk string
 ---@return boolean
 local function is_cwd_fallback_chunk(chunk)
@@ -93,12 +103,7 @@ end
 ---@param id string
 ---@return string[]
 function M.read_lines(id)
-    local lines = {}
-
-    if history_enabled() and vim.fn.filereadable(M.path(id)) == 1 then
-        lines = vim.fn.readfile(M.path(id))
-    end
-
+    local lines = read_durable_lines(id)
     local tail = pending[id]
 
     if tail and tail ~= '' then
@@ -128,16 +133,18 @@ end
 ---@param live_output? string
 ---@return string[]
 function M.read_lines_with_live_output(id, live_output)
-    local lines = M.read_lines(id)
-
     if type(live_output) ~= 'string' or live_output == '' then
-        return lines
+        return M.read_lines(id)
     end
 
-    for line in string.gmatch(live_output, '([^\n]*)\n?') do
-        if line == '' then
-            break
-        end
+    local lines = read_durable_lines(id)
+    local live_lines = vim.split(live_output, '\n', { plain = true, trimempty = false })
+
+    if live_output:sub(-1) == '\n' then
+        table.remove(live_lines)
+    end
+
+    for _, line in ipairs(live_lines) do
         table.insert(lines, line)
     end
 

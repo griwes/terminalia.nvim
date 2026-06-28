@@ -65,6 +65,7 @@ function M.new(state, deps)
         vim.bo[bufnr].swapfile = false
         helper.set_terminal_buffer_name(bufnr, terminal)
         vim.b[bufnr].terminalia_id = terminal.id
+        vim.b[bufnr].terminal_manager_id = terminal.id
         require('terminalia.winbar').install(bufnr)
 
         deps.registry.update(terminal.id, {
@@ -121,6 +122,7 @@ function M.new(state, deps)
         vim.bo[replacement_bufnr].swapfile = false
         helper.set_terminal_buffer_name(replacement_bufnr, terminal)
         vim.b[replacement_bufnr].terminalia_id = terminal.id
+        vim.b[replacement_bufnr].terminal_manager_id = terminal.id
         require('terminalia.winbar').install(replacement_bufnr)
 
         local function commit()

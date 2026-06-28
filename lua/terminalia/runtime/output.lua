@@ -75,6 +75,12 @@ function M.new(state, deps)
         if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
             local wins = deps.visible_windows_for_buffer(bufnr)
             if #wins > 0 then
+                if opts and (opts.event == 'BufHidden' or opts.event == 'BufWipeout' or opts.event == 'WinClosed') then
+                    vim.schedule(function()
+                        helper.finalize_disposable(id, { bufnr = bufnr })
+                    end)
+                end
+
                 return false
             end
 

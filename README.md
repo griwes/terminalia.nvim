@@ -39,9 +39,15 @@ Deeper shell integration, picker layers, and adapter integrations are still plan
 Terminalia keeps `state_file` as a compact registry index and stores full
 terminal/context records as separate JSON files under `state_file .. '.d'`.
 Terminal output history remains separately owned by `history_dir`, one file per
-terminal. Continuity captures only Terminalia record ids and a pointer to this
-authoritative state file, rather than duplicating terminal registry payloads in
-session records.
+terminal. Record and index replacements use same-directory temporary files and
+atomic rename, so interrupted writes leave the previous file readable.
+
+Continuity captures a bounded, immutable copy of the terminal records and their
+context chains. It does not dereference Terminalia's mutable persistence files
+during restore, and a captured record whose id has since been reused is restored
+under a fresh id. Session-captured terminal buffers, including disposable ones,
+are explicitly marked to restart; ordinary Terminalia persistence continues to
+exclude disposable terminals.
 
 ## Installation
 
@@ -228,3 +234,4 @@ Additional control helpers:
 
 - `stylua .`
 - `nvim --headless -u tests/minimal_init.lua -l tests/run.lua`
+- Broad spec: `tests/terminalia_spec.lua` (renamed from `tests/terminal_manager_spec.lua`)

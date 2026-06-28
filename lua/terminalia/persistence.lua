@@ -50,8 +50,26 @@ end
 ---@param path string
 ---@param payload table
 local function write_json(path, payload)
-    vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
-    vim.fn.writefile({ vim.json.encode(payload) }, path)
+    local parent = vim.fn.fnamemodify(path, ':h')
+    vim.fn.mkdir(parent, 'p')
+
+    local encoded_ok, encoded = pcall(vim.json.encode, payload)
+    if not encoded_ok then
+        error(string.format('Failed to encode Terminalia persistence record %s: %s', path, encoded))
+    end
+
+    local temporary = string.format('%s.tmp.%d.%d', path, vim.fn.getpid(), vim.uv.hrtime())
+    local write_ok, write_result = pcall(vim.fn.writefile, { encoded }, temporary)
+    if not write_ok or write_result ~= 0 then
+        vim.uv.fs_unlink(temporary)
+        error(string.format('Failed to write Terminalia persistence temporary %s: %s', temporary, write_result))
+    end
+
+    local renamed, rename_err = vim.uv.fs_rename(temporary, path)
+    if not renamed then
+        vim.uv.fs_unlink(temporary)
+        error(string.format('Failed to replace Terminalia persistence record %s: %s', path, rename_err))
+    end
 end
 
 ---@param path string
