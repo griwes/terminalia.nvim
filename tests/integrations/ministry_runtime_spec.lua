@@ -1,5 +1,19 @@
-local ministry_root = vim.fs.normalize(vim.fs.joinpath(vim.fn.getcwd(), '..', 'ministry.nvim'))
-vim.opt.runtimepath:prepend(ministry_root)
+local ministry_root = vim.env.MINISTRY_NVIM_PATH
+local require_integration = vim.env.TERMINALIA_REQUIRE_MINISTRY_INTEGRATION == '1'
+
+if ministry_root and ministry_root ~= '' then
+    ministry_root = vim.fs.normalize(ministry_root)
+    if vim.fn.isdirectory(ministry_root) == 0 then
+        error('MINISTRY_NVIM_PATH is not a plugin checkout: ' .. ministry_root)
+    end
+    vim.opt.runtimepath:prepend(ministry_root)
+elseif require_integration then
+    error('TERMINALIA_REQUIRE_MINISTRY_INTEGRATION requires MINISTRY_NVIM_PATH')
+end
+
+if not ministry_root or ministry_root == '' then
+    return
+end
 
 describe('terminalia ministry runtime integration', function()
     local history_dir
