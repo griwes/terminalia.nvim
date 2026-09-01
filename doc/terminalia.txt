@@ -1,0 +1,75 @@
+*terminalia.txt*                 Terminalia terminal objects
+
+==============================================================================
+CONTENTS                                                     *terminalia-contents*
+
+1. Introduction ............................................ |terminalia|
+2. Setup .................................................... |terminalia-setup|
+3. Commands ................................................. |terminalia-commands|
+4. API ...................................................... |terminalia-api|
+5. Health ................................................... |terminalia-health|
+
+==============================================================================
+INTRODUCTION                                                     *terminalia*
+
+Terminalia owns persistent terminal identities, context stacks, terminal
+buffers, history, and split/float views. Neovim 0.11 or newer is required.
+
+==============================================================================
+SETUP                                                   *terminalia-setup*
+
+>lua
+    require('terminalia').setup({
+        default_view = 'split',
+        persist_terminals = true,
+    })
+<
+
+The default namespace is "default". Terminal records and output history are
+stored below stdpath('state') unless their paths are overridden.
+
+==============================================================================
+COMMANDS                                             *terminalia-commands*
+
+                                                *:TerminaliaNew*
+:TerminaliaNew [name] [namespace] [view]
+    Create and open a terminal.
+
+                                                *:TerminaliaOpen*
+:TerminaliaOpen {id} [view]
+    Reopen a terminal by id.
+
+                                                *:TerminaliaList*
+:TerminaliaList [namespace] [cwd-prefix]
+    List known terminals.
+
+                                                *:TerminaliaHistory*
+:TerminaliaHistory {id}
+    Open captured terminal history.
+
+                                                *:TerminaliaOpenUri*
+:TerminaliaOpenUri {uri} [view]
+    Adopt or reopen a terminalia:// URI.
+
+                                                *:TerminaliaExternalOpen*
+:TerminaliaExternalOpen [arguments...]
+    Open nvim-style file arguments in the host editor.
+
+==============================================================================
+API                                                       *terminalia-api*
+
+The root module exposes `setup()` and `api`. Common API functions include
+`create()`, `start()`, `send()`, `wait()`, `kill()`, `release()`, `open()`,
+`open_history()`, `create_context()`, and `create_child_context()`.
+
+Terminalia discovers optional Continuity, Ministry, and Overseer integration
+at runtime. They are not required for standalone terminal use.
+
+==============================================================================
+HEALTH                                                 *terminalia-health*
+
+Run: >vim
+    :checkhealth terminalia
+<
+
+vim:tw=78:ts=8:noet:ft=help:norl:

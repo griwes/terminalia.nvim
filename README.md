@@ -49,19 +49,32 @@ under a fresh id. Session-captured terminal buffers, including disposable ones,
 are explicitly marked to restart; ordinary Terminalia persistence continues to
 exclude disposable terminals.
 
+## Requirements
+
+- Neovim 0.11 or newer
+- a POSIX shell for the built-in shell integration
+- optional: `continuity.nvim`, `ministry.nvim`, and `overseer.nvim` for their
+  respective integrations
+
+Linux is the primary supported and CI-tested platform. The project is in early
+development and currently publishes from `main`; tagged releases will define a
+stable versioning policy when the API is ready for one.
+
 ## Installation
 
-Example local `lazy.nvim` spec:
+With `lazy.nvim`:
 
 ```lua
 {
-    dir = vim.fn.expand('~/projects/neovim-plugin-orchestration/terminalia.nvim'),
-    name = 'terminalia.nvim',
+    'griwes/terminalia.nvim',
     opts = {
         default_view = 'split',
     },
 }
 ```
+
+Run `:checkhealth terminalia` after installation. See `:help terminalia` for
+the command and API overview.
 
 ## Commands
 
@@ -235,3 +248,7 @@ Additional control helpers:
 - `stylua .`
 - `nvim --headless -u tests/minimal_init.lua -l tests/run.lua`
 - Broad spec: `tests/terminalia_spec.lua` (renamed from `tests/terminal_manager_spec.lua`)
+
+## License
+
+Apache-2.0. See [`LICENSE`](LICENSE).
