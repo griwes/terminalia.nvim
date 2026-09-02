@@ -15,6 +15,20 @@ describe('terminalia', function()
         return plugin
     end
 
+    ---@param name string
+    ---@param arglead string
+    ---@param cmdline string
+    ---@return string[]
+    local function complete_command(name, arglead, cmdline)
+        local definition = assert(vim.api.nvim_get_commands({})[name])
+
+        if type(definition.complete) == 'function' then
+            return definition.complete(arglead, cmdline, #cmdline)
+        end
+
+        return vim.fn.getcompletion(cmdline, 'cmdline')
+    end
+
     ---@param fn fun(): boolean, string?
     ---@return boolean, string?, string[]
     local function with_notifications(fn)
@@ -2184,12 +2198,8 @@ describe('terminalia', function()
             name = 'build',
             namespace = 'workspace',
         })
-        local commands = vim.api.nvim_get_commands({})
-
-        assert.is_function(commands.TerminaliaOpen.complete)
-        assert.is_function(commands.TerminaliaHistory.complete)
-        assert.are.same({ terminal.id }, commands.TerminaliaOpen.complete('', 'TerminaliaOpen ', 0))
-        assert.are.same({ terminal.id }, commands.TerminaliaHistory.complete('', 'TerminaliaHistory ', 0))
+        assert.are.same({ terminal.id }, complete_command('TerminaliaOpen', '', 'TerminaliaOpen '))
+        assert.are.same({ terminal.id }, complete_command('TerminaliaHistory', '', 'TerminaliaHistory '))
     end)
 
     it('completes namespaces, cwd prefixes, and view kinds for terminal commands', function()
@@ -2199,20 +2209,18 @@ describe('terminalia', function()
             namespace = 'workspace',
             cwd = '/tmp/workspace',
         })
-        local commands = vim.api.nvim_get_commands({})
-
         assert.are.equal(terminal.id, plugin.api.list()[1].id)
-        assert.are.same({ 'workspace' }, commands.TerminaliaNew.complete('w', 'TerminaliaNew build w', 0))
-        assert.are.same({ 'split' }, commands.TerminaliaNew.complete('s', 'TerminaliaNew build workspace s', 0))
-        assert.are.same({ 'float' }, commands.TerminaliaOpen.complete('f', 'TerminaliaOpen terminal:1 f', 0))
-        assert.are.same({ 'workspace' }, commands.TerminaliaList.complete('w', 'TerminaliaList w', 0))
+        assert.are.same({ 'workspace' }, complete_command('TerminaliaNew', 'w', 'TerminaliaNew build w'))
+        assert.are.same({ 'split' }, complete_command('TerminaliaNew', 's', 'TerminaliaNew build workspace s'))
+        assert.are.same({ 'float' }, complete_command('TerminaliaOpen', 'f', 'TerminaliaOpen terminal:1 f'))
+        assert.are.same({ 'workspace' }, complete_command('TerminaliaList', 'w', 'TerminaliaList w'))
         assert.are.same(
             { '/tmp/workspace' },
-            commands.TerminaliaList.complete('/tmp/w', 'TerminaliaList workspace /tmp/w', 0)
+            complete_command('TerminaliaList', '/tmp/w', 'TerminaliaList workspace /tmp/w')
         )
-        assert.are.same({}, commands.TerminaliaNew.complete('', 'TerminaliaNew build workspace split ', 0))
-        assert.are.same({}, commands.TerminaliaOpen.complete('', 'TerminaliaOpen terminal:1 float ', 0))
-        assert.are.same({}, commands.TerminaliaList.complete('', 'TerminaliaList workspace /tmp/workspace extra', 0))
+        assert.are.same({}, complete_command('TerminaliaNew', '', 'TerminaliaNew build workspace split '))
+        assert.are.same({}, complete_command('TerminaliaOpen', '', 'TerminaliaOpen terminal:1 float '))
+        assert.are.same({}, complete_command('TerminaliaList', '', 'TerminaliaList workspace /tmp/workspace extra'))
     end)
 
     it('creates a terminal through the user command surface', function()
@@ -4155,7 +4163,6 @@ describe('terminalia', function()
 
     it('completes cwd prefixes for quoted namespaces', function()
         local plugin = require('terminalia')
-        local commands = vim.api.nvim_get_commands({})
         plugin.setup({
             history_dir = history_dir,
             notify_on_exit = false,
@@ -4176,36 +4183,32 @@ describe('terminalia', function()
 
         assert.are.same({
             '/tmp/workspace dir',
-        }, commands.TerminaliaList.complete('/tmp/w', [[TerminaliaList "workspace team" /tmp/w]], 0))
+        }, complete_command('TerminaliaList', '/tmp/w', [[TerminaliaList "workspace team" /tmp/w]]))
         assert.are.same({
             '/tmp/team space',
-        }, commands.TerminaliaList.complete('/tmp', [[TerminaliaList "team space" /tmp]], 0))
+        }, complete_command('TerminaliaList', '/tmp', [[TerminaliaList "team space" /tmp]]))
     end)
 
     it('does not guess completion state from stray quote text', function()
         local plugin = require('terminalia')
-        local commands = vim.api.nvim_get_commands({})
-
         plugin.api.create({
             name = 'build',
             namespace = 'workspace',
             cwd = '/tmp/workspace',
         })
 
-        assert.are.same({}, commands.TerminaliaList.complete('', [[TerminaliaList workspace " ]], 0))
+        assert.are.same({}, complete_command('TerminaliaList', '', [[TerminaliaList workspace " ]]))
     end)
 
     it('treats Ex metacharacter prefixes as literal completion args', function()
         local plugin = require('terminalia')
-        local commands = vim.api.nvim_get_commands({})
-
         plugin.api.create({
             name = 'build',
             namespace = '|workspace',
             cwd = '%/tmp/workspace',
         })
 
-        assert.are.same({ '|workspace' }, commands.TerminaliaList.complete('|', 'TerminaliaList |', 0))
-        assert.are.same({ '%/tmp/workspace' }, commands.TerminaliaList.complete('', 'TerminaliaList |workspace ', 0))
+        assert.are.same({ '|workspace' }, complete_command('TerminaliaList', '|', 'TerminaliaList |'))
+        assert.are.same({ '%/tmp/workspace' }, complete_command('TerminaliaList', '', 'TerminaliaList |workspace '))
     end)
 end)
