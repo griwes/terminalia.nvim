@@ -32,7 +32,8 @@ The current slice is intentionally small but usable:
   child `nvim file` process can redirect safe file-open invocations back to the
   top-level editor and exit
 
-Deeper shell integration, picker layers, and adapter integrations are still planned work.
+Terminalia does not currently include picker layers, shell integrations beyond
+the built-in host-shell path, or additional provider-specific adapters.
 
 ## Storage
 
@@ -57,8 +58,8 @@ exclude disposable terminals.
   respective integrations
 
 Linux is the primary supported and CI-tested platform. The project is in early
-development and currently publishes from `main`; tagged releases will define a
-stable versioning policy when the API is ready for one.
+development and currently publishes from `main` without a stable tagged
+versioning policy.
 
 ## Installation
 
@@ -113,14 +114,14 @@ the owning terminal record's current cwd. Terminalia's default handler rejects
 payloads that would execute editor commands through `+cmd` or `--cmd`.
 
 Provider plugins that own derived terminal contexts, such as Laboratory and
-Consulate, should not duplicate the protocol machinery. They can produce open
-actions through `terminalia.api.build_terminal_open_action()`, parse complete
-sequences through `terminalia.api.parse_terminal_action_sequence()`, or parse
-output streams through `terminalia.api.extract_terminal_action_chunks()`. That
-lets a provider add metadata or path translations, handle the action itself, or
-forward a modified payload into `terminalia.api.open_external()`. The
-stream-safe stripping helper is also public so providers can keep action markup
-out of their own captured output when they do not need the parsed actions.
+Consulate, use the same protocol machinery. Public helpers produce open actions
+through `terminalia.api.build_terminal_open_action()`, parse complete sequences
+through `terminalia.api.parse_terminal_action_sequence()`, and parse output
+streams through `terminalia.api.extract_terminal_action_chunks()`. A provider
+can add metadata or path translations, handle the action itself, or forward a
+modified payload into `terminalia.api.open_external()`. The stream-safe
+stripping helper also keeps action markup out of provider-captured output when
+the parsed actions are not needed.
 
 When a terminal belongs to a derived `TerminalContext`, its context provider may
 define `transform_terminal_action(context, action, terminal)`. Return a
@@ -128,9 +129,9 @@ rewritten action to let Terminalia continue with default handling, return
 `false` when the provider handled the request itself, or return `nil` to keep
 the original action.
 
-Terminalia does not install a PATH shim or local wrapper for `nvim` here.
-Provider-owned contexts should decide how their local, remote, or container
-shells produce these sequences.
+Terminalia does not install a PATH shim or local wrapper for `nvim` here. The
+way local, remote, or container shells produce these sequences remains owned by
+their context provider.
 
 For host-owned interactive `sh`, `bash`, and `zsh` terminals, Terminalia
 injects the producer side into only the shell session it launches. Terminalia
@@ -245,9 +246,9 @@ Additional control helpers:
 
 ## Development
 
-- `stylua .`
-- `nvim --headless -u tests/minimal_init.lua -l tests/run.lua`
-- Broad spec: `tests/terminalia_spec.lua` (renamed from `tests/terminal_manager_spec.lua`)
+Run `scripts/ci/run.sh` for the same formatting and test gates used by CI.
+Tests live under `tests/`, including the broad integration coverage in
+`tests/terminalia_spec.lua`.
 
 ## License
 
