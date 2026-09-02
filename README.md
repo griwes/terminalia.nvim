@@ -246,8 +246,10 @@ Additional control helpers:
 
 ## Development
 
-Run `scripts/ci/run.sh` for the same formatting and test gates used by CI.
-Tests live under `tests/`, including the broad integration coverage in
+Run `scripts/ci/run.sh` for the repository-local formatting, test, and
+clean-install smoke checks. GitHub Actions runs them on Neovim 0.11.5, stable,
+and nightly, validates workflow syntax, and adds the cross-plugin compatibility
+jobs. Tests live under `tests/`, including the broad integration coverage in
 `tests/terminalia_spec.lua`.
 
 ## License
