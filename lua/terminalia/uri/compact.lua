@@ -70,7 +70,13 @@ function M.encode(kind, terminal)
         end
     end
 
-    table.insert(segments, components.encode_id(terminal.id, 'terminal:'))
+    local terminal_id = components.encode_id(terminal.id, 'terminal:')
+
+    if terminal_id == 'history' then
+        terminal_id = '%68istory'
+    end
+
+    table.insert(segments, terminal_id)
 
     if kind == 'history' then
         table.insert(segments, 'history')

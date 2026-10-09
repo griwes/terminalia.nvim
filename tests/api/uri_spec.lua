@@ -75,6 +75,36 @@ describe('terminalia.api URI migration', function()
         assert.are.equal('nofile', vim.bo[bufnr].buftype)
     end)
 
+    it('adopts a legacy alias when an unregistered canonical terminal buffer exists', function()
+        local terminal = plugin.api.create({ id = 'terminal:7' })
+        local canonical = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_name(canonical, 'terminalia://7')
+        buffers[#buffers + 1] = canonical
+        local alias = legacy_buffer('terminal', terminal.id)
+
+        local adopted = plugin.api.adopt_uri_buffer(alias)
+
+        assert.are.equal(terminal.id, adopted.id)
+        assert.are.equal(alias, adopted.bufnr)
+        assert.are.equal('terminalia://7', vim.api.nvim_buf_get_name(alias))
+        assert.is_false(vim.api.nvim_buf_is_valid(canonical))
+        assert.are.equal(original_bufnr, vim.api.nvim_get_current_buf())
+    end)
+
+    it('does not mistake a similarly named buffer for canonical history', function()
+        local terminal = plugin.api.create({ id = 'terminal:8', name = 'build' })
+        local canonical_name = require('terminalia.uri').encode_history_uri(terminal)
+        local unrelated = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_name(unrelated, canonical_name .. '-extra')
+        buffers[#buffers + 1] = unrelated
+        local alias = legacy_buffer('history', terminal.id)
+
+        assert.are.equal(alias, plugin.api.adopt_uri_buffer(alias))
+        assert.are.equal(canonical_name, vim.api.nvim_buf_get_name(alias))
+        assert.are.equal(canonical_name .. '-extra', vim.api.nvim_buf_get_name(unrelated))
+        assert.is_true(vim.api.nvim_buf_is_valid(unrelated))
+    end)
+
     it('reuses an existing canonical history view when adopting a legacy alias', function()
         local terminal = plugin.api.create({ id = 'terminal:9' })
         plugin.api.open_history(terminal.id)

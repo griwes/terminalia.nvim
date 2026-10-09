@@ -51,6 +51,23 @@ describe('terminalia.uri compact format', function()
         end
     end)
 
+    it('preserves history-named and colon-containing terminal ids in child contexts', function()
+        local context = contexts.create_child(contexts.host().id, { kind = 'remote_workspace' })
+
+        for _, id in ipairs({ 'terminal:history', 'terminal:build:1' }) do
+            local terminal = { id = id, name = id, context_id = context.id }
+            local live = assert(uri.decode(uri.encode_terminal_uri(terminal)))
+            local history = assert(uri.decode(uri.encode_history_uri(terminal)))
+
+            assert.are.equal('terminal', live.kind)
+            assert.are.equal('history', history.kind)
+            assert.are.equal(id, live.terminal_id)
+            assert.are.equal(id, history.terminal_id)
+            assert.are.same({ 'context:host', context.id }, live.context_stack_ids)
+            assert.are.same(live.context_stack_ids, history.context_stack_ids)
+        end
+    end)
+
     it('carries nested provider contexts without emitting the host', function()
         local remote = contexts.create_child(contexts.host().id, {
             kind = 'remote_workspace',
