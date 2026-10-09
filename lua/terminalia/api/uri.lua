@@ -108,6 +108,18 @@ local function buffer_is_visible(bufnr)
     return false
 end
 
+---@param name string
+---@return integer?
+local function find_buffer_by_name(name)
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) == name then
+            return bufnr
+        end
+    end
+
+    return nil
+end
+
 ---@param replacement integer
 ---@param obsolete integer
 local function replace_buffer_in_windows(replacement, obsolete)
@@ -135,6 +147,15 @@ local function adopt_terminal_buffer(api, bufnr, decoded)
         return terminal
     end
 
+    local canonical_name = uri.encode_terminal_uri(terminal)
+    local conflicting = find_buffer_by_name(canonical_name)
+
+    if conflicting ~= nil and conflicting ~= bufnr then
+        -- Free the canonical name before window changes can trigger URI adoption.
+        vim.api.nvim_buf_set_name(conflicting, string.format('terminalia-displaced://%s/%d', terminal.id, conflicting))
+    end
+
+    vim.api.nvim_buf_set_name(bufnr, canonical_name)
     vim.bo[bufnr].bufhidden = 'hide'
     vim.bo[bufnr].swapfile = false
     vim.b[bufnr].terminalia_id = terminal.id
@@ -143,6 +164,10 @@ local function adopt_terminal_buffer(api, bufnr, decoded)
         bufnr = bufnr,
     })
     require('terminalia.winbar').install(bufnr)
+
+    if conflicting ~= nil and conflicting ~= bufnr then
+        replace_buffer_in_windows(bufnr, conflicting)
+    end
 
     if buffer_is_visible(bufnr) and not (terminal.status == 'running' and terminal.job_id ~= nil) then
         terminal = api.start(terminal.id)
@@ -157,12 +182,21 @@ end
 ---@return integer
 local function adopt_history_buffer(api, bufnr, decoded)
     local terminal = ensure_uri_terminal_record(api, decoded)
+    local canonical_name = uri.encode_history_uri(terminal)
+    local existing = find_buffer_by_name(canonical_name)
+
+    if existing ~= nil and existing ~= bufnr then
+        replace_buffer_in_windows(existing, bufnr)
+        return existing
+    end
+
     local ok, lines = pcall(api.history_lines, terminal.id)
 
     if not ok or type(lines) ~= 'table' or #lines == 0 then
         lines = { '' }
     end
 
+    vim.api.nvim_buf_set_name(bufnr, canonical_name)
     vim.bo[bufnr].buftype = 'nofile'
     vim.bo[bufnr].bufhidden = 'wipe'
     vim.bo[bufnr].swapfile = false

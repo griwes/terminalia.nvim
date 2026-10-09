@@ -4084,7 +4084,7 @@ describe('terminalia', function()
     it('rejects malformed terminal uris clearly', function()
         local uri = require('terminalia.uri')
 
-        local decoded, err = uri.decode('terminalia://bogus')
+        local decoded, err = uri.decode('terminalia://')
 
         assert.is_nil(decoded)
         assert.are.equal('Malformed Terminalia URI', err)

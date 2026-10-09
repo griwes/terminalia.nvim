@@ -51,6 +51,13 @@ COMMANDS                                             *terminalia-commands*
 :TerminaliaOpenUri {uri} [view]
     Adopt or reopen a terminalia:// URI.
 
+    The host context is implicit: terminalia://1 identifies a local terminal,
+    and terminalia://1/history identifies its history. Custom names use
+    ?name=build. Derived context layers use kind:id path components with
+    ;label=value and ;meta.key=value parameters for reopening information.
+    Parameter values are percent-encoded. Older hierarchical URI names remain
+    readable and are renamed to the compact form when their buffers are adopted.
+
                                                 *:TerminaliaExternalOpen*
 :TerminaliaExternalOpen [arguments...]
     Open nvim-style file arguments in the host editor.

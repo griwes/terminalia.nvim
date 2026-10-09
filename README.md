@@ -77,6 +77,24 @@ With `lazy.nvim`:
 Run `:checkhealth terminalia` after installation. See `:help terminalia` for
 the command and API overview.
 
+## Buffer URIs
+
+The host context is implicit. An unnamed local terminal uses
+`terminalia://1`, and its history uses `terminalia://1/history`. Internal
+`terminal:` ID prefixes and names that merely repeat the ID are omitted. A
+custom name is retained as a query, for example `terminalia://1?name=build`.
+
+Derived contexts add one path component per layer, such as
+`terminalia://fixture:1;label=build/2`. Scalar provider metadata is carried in
+`;meta.key=value` parameters so missing contexts can still be reconstructed.
+Labels and parameter values are percent-encoded; the host layer is never
+written into the path. Explicit IDs without the usual `terminal:` or
+`context:` prefix use an `@` marker to avoid ambiguous identities.
+
+Older hierarchical `terminalia://...` and `terminal-manager://...` names
+remain readable. Adopting an old terminal or history buffer gives it the new
+canonical name, preserving its logical terminal identity and context.
+
 ## Commands
 
 - `:TerminaliaNew [name] [namespace] [view]`
