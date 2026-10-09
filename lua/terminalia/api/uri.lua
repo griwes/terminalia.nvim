@@ -135,6 +135,7 @@ local function adopt_terminal_buffer(api, bufnr, decoded)
         return terminal
     end
 
+    vim.api.nvim_buf_set_name(bufnr, uri.encode_terminal_uri(terminal))
     vim.bo[bufnr].bufhidden = 'hide'
     vim.bo[bufnr].swapfile = false
     vim.b[bufnr].terminalia_id = terminal.id
@@ -157,12 +158,21 @@ end
 ---@return integer
 local function adopt_history_buffer(api, bufnr, decoded)
     local terminal = ensure_uri_terminal_record(api, decoded)
+    local canonical_name = uri.encode_history_uri(terminal)
+    local existing = vim.fn.bufnr(canonical_name)
+
+    if existing > 0 and existing ~= bufnr and vim.api.nvim_buf_is_valid(existing) then
+        replace_buffer_in_windows(existing, bufnr)
+        return existing
+    end
+
     local ok, lines = pcall(api.history_lines, terminal.id)
 
     if not ok or type(lines) ~= 'table' or #lines == 0 then
         lines = { '' }
     end
 
+    vim.api.nvim_buf_set_name(bufnr, canonical_name)
     vim.bo[bufnr].buftype = 'nofile'
     vim.bo[bufnr].bufhidden = 'wipe'
     vim.bo[bufnr].swapfile = false
